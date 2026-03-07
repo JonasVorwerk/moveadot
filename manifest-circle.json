@@ -1,0 +1,12 @@
+{
+  "name": "Circle Firmware",
+  "version": "1.0.0",
+  "builds": [
+    {
+      "chipFamily": "ESP8266",
+      "parts": [
+        { "path": "firmware/circle/circle.ino.bin", "offset": 0 }
+      ]
+    }
+  ]
+}

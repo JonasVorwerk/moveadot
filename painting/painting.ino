@@ -102,7 +102,7 @@ typedef struct {
 } preset_packet;
 
 static const LampPreset lampPresets[MAX_PRESETS] = {
-  { "Warm",      18, 180, 255, true, 0, 128,  10 },  // Warm amber, solid
+  { "Weirdo",    18, 180, 255, true, 4, 128,  10 },  // Warm amber, solid
   { "Daylight", 150,  80, 255, true, 0, 128,  10 },  // Cool daylight, solid
   { "Sunset",    15, 255, 200, true, 0, 128,  10 },  // Deep orange, solid
   { "Weirdo",    80, 200, 200, true, 4, 128,  50 },  // Autonomous weirdo
