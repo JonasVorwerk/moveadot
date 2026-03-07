@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fixture Control</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #111;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+    }
+
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 24px;
+      text-transform: uppercase;
+    }
+
+    #connect-btn {
+      background: #fff;
+      color: #111;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 24px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    #connect-btn:hover { opacity: 0.85; }
+    #connect-btn:disabled { opacity: 0.4; cursor: default; }
+
+    #status {
+      font-size: 0.8rem;
+      color: #555;
+      margin-top: 10px;
+      min-height: 1.2em;
+    }
+    #status.ok { color: #4caf50; }
+    #status.err { color: #f44336; }
+
+    #panel {
+      display: none;
+      width: 100%;
+      max-width: 420px;
+      margin-top: 32px;
+    }
+
+    /* Color swatch */
+    #swatch {
+      width: 100%;
+      height: 80px;
+      border-radius: 12px;
+      margin-bottom: 24px;
+      transition: background 0.1s;
+    }
+
+    /* Power */
+    #power-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+    #power-row label { font-size: 0.85rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .track {
+      position: absolute;
+      inset: 0;
+      background: #333;
+      border-radius: 24px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle .track::after {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      background: #fff;
+      border-radius: 50%;
+      top: 3px;
+      left: 3px;
+      transition: transform 0.2s;
+    }
+    .toggle input:checked + .track { background: #4caf50; }
+    .toggle input:checked + .track::after { transform: translateX(20px); }
+
+    /* Sliders */
+    .slider-group {
+      margin-bottom: 20px;
+    }
+    .slider-group .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .slider-group label {
+      font-size: 0.75rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      width: 52px;
+      flex-shrink: 0;
+    }
+    .slider-group input[type=range] {
+      flex: 1;
+      -webkit-appearance: none;
+      height: 4px;
+      border-radius: 2px;
+      background: #333;
+      outline: none;
+    }
+    .slider-group input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+    }
+    .slider-group .val {
+      font-size: 0.8rem;
+      color: #555;
+      width: 28px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    /* Modes */
+    #modes-section { margin-top: 4px; }
+    #modes-section h2 {
+      font-size: 0.75rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 10px;
+    }
+    #mode-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .mode-btn {
+      background: #222;
+      color: #aaa;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.1s;
+    }
+    .mode-btn:hover { background: #2a2a2a; color: #eee; }
+    .mode-btn.active {
+      background: #fff;
+      color: #111;
+      border-color: #fff;
+      font-weight: 600;
+    }
+
+    #disconnect-btn {
+      margin-top: 32px;
+      background: none;
+      color: #444;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 8px 20px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    #disconnect-btn:hover { color: #aaa; border-color: #555; }
+
+    #device-name {
+      font-size: 0.75rem;
+      color: #444;
+      text-align: center;
+      margin-bottom: 16px;
+      letter-spacing: 0.05em;
+    }
+  </style>
+</head>
+<body>
+  <h1>Fixture Control</h1>
+  <button id="connect-btn">Connect via USB</button>
+  <div id="status">Requires Chrome or Edge</div>
+
+  <div id="panel">
+    <div id="device-name"></div>
+    <div id="swatch"></div>
+
+    <div id="power-row">
+      <label>Power</label>
+      <label class="toggle">
+        <input type="checkbox" id="power" checked>
+        <span class="track"></span>
+      </label>
+    </div>
+
+    <div class="slider-group">
+      <div class="row">
+        <label>Hue</label>
+        <input type="range" id="hue" min="0" max="255" value="30">
+        <span class="val" id="hue-val">30</span>
+      </div>
+    </div>
+    <div class="slider-group">
+      <div class="row">
+        <label>Sat</label>
+        <input type="range" id="sat" min="0" max="255" value="200">
+        <span class="val" id="sat-val">200</span>
+      </div>
+    </div>
+    <div class="slider-group">
+      <div class="row">
+        <label>Val</label>
+        <input type="range" id="val" min="0" max="255" value="200">
+        <span class="val" id="val-val">200</span>
+      </div>
+    </div>
+    <div class="slider-group">
+      <div class="row">
+        <label>Speed</label>
+        <input type="range" id="speed" min="0" max="255" value="128">
+        <span class="val" id="speed-val">128</span>
+      </div>
+    </div>
+    <div class="slider-group">
+      <div class="row">
+        <label>Fade</label>
+        <input type="range" id="fadeout" min="0" max="255" value="10">
+        <span class="val" id="fadeout-val">10</span>
+      </div>
+    </div>
+
+    <div id="modes-section">
+      <h2>Mode</h2>
+      <div id="mode-buttons"></div>
+    </div>
+
+    <button id="disconnect-btn">Disconnect</button>
+  </div>
+
+  <script>
+    const MODES = {
+      Circle: [
+        { id: 0, name: 'Solid' },
+        { id: 1, name: 'Confetti' },
+        { id: 2, name: 'Noise' },
+        { id: 3, name: 'Noise + Hue' },
+        { id: 5, name: 'Wave: Sine' },
+        { id: 6, name: 'Wave: Sawtooth' },
+        { id: 7, name: 'Wave: Individual' },
+        { id: 8, name: 'Wave: Pulse' },
+        { id: 9, name: 'Move a Dot' },
+      ],
+      Painting: [
+        { id: 0, name: 'Solid' },
+        { id: 1, name: 'Confetti' },
+        { id: 2, name: 'Noise' },
+        { id: 3, name: 'Noise + Hue' },
+        { id: 4, name: 'Weirdo' },
+        { id: 5, name: 'Wave: Sine' },
+        { id: 6, name: 'Wave: Sawtooth' },
+        { id: 7, name: 'Wave: Individual' },
+        { id: 8, name: 'Wave: Row Pulse' },
+      ],
+      Light: [
+        { id: 0, name: 'Solid' },
+        { id: 1, name: 'Confetti' },
+        { id: 2, name: 'Shooting Star' },
+      ],
+    };
+
+    let port = null;
+    let writer = null;
+    let reader = null;
+    let currentMode = 9;
+    let sendTimeout = null;
+
+    const $ = id => document.getElementById(id);
+
+    // HSV → RGB for swatch
+    function hsvToRgb(h, s, v) {
+      h = (h / 255) * 360;
+      s = s / 255;
+      v = v / 255;
+      const c = v * s;
+      const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+      const m = v - c;
+      let r = 0, g = 0, b = 0;
+      if (h < 60)       { r = c; g = x; }
+      else if (h < 120) { r = x; g = c; }
+      else if (h < 180) { g = c; b = x; }
+      else if (h < 240) { g = x; b = c; }
+      else if (h < 300) { r = x; b = c; }
+      else              { r = c; b = x; }
+      return [Math.round((r+m)*255), Math.round((g+m)*255), Math.round((b+m)*255)];
+    }
+
+    function updateSwatch() {
+      const powered = $('power').checked;
+      if (!powered) { $('swatch').style.background = '#1a1a1a'; return; }
+      const [r, g, b] = hsvToRgb(+$('hue').value, +$('sat').value, +$('val').value);
+      $('swatch').style.background = `rgb(${r},${g},${b})`;
+    }
+
+    function buildModes(deviceName) {
+      const modes = MODES[deviceName] || MODES.Circle;
+      const container = $('mode-buttons');
+      container.innerHTML = '';
+      modes.forEach(m => {
+        const btn = document.createElement('button');
+        btn.className = 'mode-btn' + (m.id === currentMode ? ' active' : '');
+        btn.textContent = m.name;
+        btn.dataset.mode = m.id;
+        btn.addEventListener('click', () => {
+          currentMode = m.id;
+          container.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          send();
+        });
+        container.appendChild(btn);
+      });
+    }
+
+    async function send() {
+      if (!writer) return;
+      const h       = $('hue').value;
+      const s       = $('sat').value;
+      const v       = $('val').value;
+      const power   = $('power').checked ? 1 : 0;
+      const speed   = $('speed').value;
+      const fadeout = $('fadeout').value;
+      const cmd     = `${h},${s},${v},${power},${currentMode},${speed},${fadeout}\n`;
+      const enc     = new TextEncoder();
+      await writer.write(enc.encode(cmd));
+      updateSwatch();
+    }
+
+    function debouncedSend() {
+      clearTimeout(sendTimeout);
+      sendTimeout = setTimeout(send, 30);
+    }
+
+    function setStatus(msg, cls = '') {
+      const el = $('status');
+      el.textContent = msg;
+      el.className = cls;
+    }
+
+    async function readLoop() {
+      const dec = new TextDecoder();
+      let buf = '';
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value);
+          let nl;
+          while ((nl = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            handleLine(line);
+          }
+        }
+      } catch {}
+    }
+
+    function handleLine(line) {
+      if (line.startsWith('STATE:')) {
+        const parts = line.slice(6).split(',');
+        if (parts.length === 7) {
+          $('hue').value   = parts[0]; $('hue-val').textContent   = parts[0];
+          $('sat').value   = parts[1]; $('sat-val').textContent   = parts[1];
+          $('val').value   = parts[2]; $('val-val').textContent   = parts[2];
+          $('power').checked = parts[3] === '1';
+          currentMode      = parseInt(parts[4]);
+          $('speed').value   = parts[5]; $('speed-val').textContent = parts[5];
+          $('fadeout').value = parts[6]; $('fadeout-val').textContent = parts[6];
+          // highlight active mode btn
+          document.querySelectorAll('.mode-btn').forEach(b => {
+            b.classList.toggle('active', parseInt(b.dataset.mode) === currentMode);
+          });
+          updateSwatch();
+          setStatus('Connected', 'ok');
+        }
+      } else if (line.startsWith('NAME:')) {
+        const name = line.slice(5);
+        $('device-name').textContent = name;
+        buildModes(name);
+      }
+    }
+
+    async function sendCmd(cmd) {
+      if (!writer) return;
+      await writer.write(new TextEncoder().encode(cmd + '\n'));
+    }
+
+    async function connect() {
+      if (!('serial' in navigator)) {
+        setStatus('Web Serial not supported. Use Chrome or Edge.', 'err');
+        return;
+      }
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        writer = port.writable.getWriter();
+        reader = port.readable.getReader();
+
+        $('connect-btn').disabled = true;
+        $('panel').style.display = 'block';
+        setStatus('Connecting…');
+
+        readLoop();
+
+        // Give the device a moment then request name + state
+        setTimeout(async () => {
+          await sendCmd('NAME');
+          await sendCmd('GET');
+        }, 500);
+
+      } catch (e) {
+        setStatus(e.message || 'Connection failed', 'err');
+      }
+    }
+
+    async function disconnect() {
+      try {
+        reader?.cancel();
+        writer?.releaseLock();
+        reader?.releaseLock?.();
+        await port?.close();
+      } catch {}
+      port = null; writer = null; reader = null;
+      $('connect-btn').disabled = false;
+      $('panel').style.display = 'none';
+      setStatus('Disconnected');
+    }
+
+    $('connect-btn').addEventListener('click', connect);
+    $('disconnect-btn').addEventListener('click', disconnect);
+
+    // Sliders
+    ['hue','sat','val','speed','fadeout'].forEach(id => {
+      const el = $(id);
+      el.addEventListener('input', () => {
+        $(id + '-val').textContent = el.value;
+        debouncedSend();
+      });
+    });
+
+    $('power').addEventListener('change', () => { send(); });
+
+    // Initial mode list (generic)
+    buildModes('Circle');
+  </script>
+</body>
+</html>

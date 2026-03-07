@@ -7,6 +7,8 @@
 #define EEPROM_ADDR_MAGIC 0
 #define EEPROM_ADDR_DATA  1
 
+#define DEVICE_NAME "Light"
+
 
 #define NUM_LEDS    180
 #define BRIGHTNESS  128
@@ -137,8 +139,55 @@ void setup() {
   FastLED.clear();
 }
 
+// ---------- SERIAL CONTROL ----------
+void checkSerial() {
+  if (!Serial.available()) return;
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+
+  if (cmd == "GET") {
+    Serial.print("STATE:");
+    Serial.print(hue);     Serial.print(",");
+    Serial.print(sat);     Serial.print(",");
+    Serial.print(val);     Serial.print(",");
+    Serial.print(power);   Serial.print(",");
+    Serial.print(mode);    Serial.print(",");
+    Serial.print(speed);   Serial.print(",");
+    Serial.println(fadeout);
+    return;
+  }
+
+  if (cmd == "NAME") {
+    Serial.println("NAME:" DEVICE_NAME);
+    return;
+  }
+
+  // Parse: h,s,v,power,mode,speed,fadeout
+  int vals[7];
+  int idx = 0;
+  char buf[64];
+  cmd.toCharArray(buf, sizeof(buf));
+  char* tok = strtok(buf, ",");
+  while (tok && idx < 7) { vals[idx++] = atoi(tok); tok = strtok(NULL, ","); }
+  if (idx == 7) {
+    hue     = (uint8_t)vals[0];
+    sat     = (uint8_t)vals[1];
+    val     = (uint8_t)vals[2];
+    power   = (bool)vals[3];
+    mode    = vals[4];
+    speed   = (uint8_t)vals[5];
+    fadeout = (uint8_t)vals[6];
+    EEPROM.write(EEPROM_ADDR_MAGIC, EEPROM_MAGIC);
+    struct_message save = {hue, sat, val, power, mode, speed, fadeout};
+    EEPROM.put(EEPROM_ADDR_DATA, save);
+    EEPROM.commit();
+    Serial.println("OK");
+  }
+}
+
 // ---------- LOOP ----------
 void loop() {
+  checkSerial();
   displayLeds();
   FastLED.show();
   FastLED.delay(1000 / FRAMES_PER_SECOND);
