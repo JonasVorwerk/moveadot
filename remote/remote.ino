@@ -1,6 +1,6 @@
 /*
- * RGB LED Remote Control - M5Stack CoreS3/SE
- * 
+ * RGB LED Remote Control - M5Stack CoreS3/SE + Core2
+ *
  * Features:
  * - 2D HSV color wheel (like traditional color picker)
  * - Hue: angle around the circle
@@ -9,6 +9,7 @@
  * - Display timeout after 10 seconds with pickup wake
  * - Sleep mode after 60 seconds with accelerometer wake
  * - ESP-NOW transmission to Light device
+ * - Runtime board detection (CoreS3/SE vs Core2)
  */
 
 #include <M5Unified.h>
@@ -93,6 +94,10 @@ uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 #define BUTTON_HEIGHT 60
 #define BUTTON_SPACING 10
 
+// UI font and size
+#define UI_FONT      Font2 //FreeSans9pt7b
+#define UI_FONT_SIZE 1
+
 // Accelerometer wake threshold
 #define ACCEL_THRESHOLD 0.1  // g-force threshold for wake (very sensitive)
 
@@ -163,6 +168,7 @@ bool lastChargingState = false;
 
 // Page navigation history for auto-return
 uint8_t previousPage = PAGE_LIGHT_SELECT;
+uint8_t lastSettingsPage = PAGE_SETTINGS;  // Last visited settings sub-page
 const char* settingsPageNames[] = { "Presets", "Color", "Settings" };
 bool ignoreFirstTouch = false;  // Ignore first touch after page navigation
 
@@ -238,12 +244,16 @@ void showShutdownAnimation();
 void setupAccelerometer();
 bool checkAccelerometer();
 void HSVtoRGB(uint8_t h, uint8_t s, uint8_t v, uint8_t &r, uint8_t &g, uint8_t &b);
+void playClick();
 
-// ---------- AXP2101 POWER KEY (direct I2C — M5.BtnPWR doesn't work on CoreS3 SE) ----------
-// Power key IRQ is in register 0x49:
-//   bit 1 (0x02) = short press (button held past minimum time, ~400 ms)
-//   bit 0 (0x01) = release event  — we ignore this
-// Must be read BEFORE M5.update() so M5Unified doesn't clear the bits first.
+// ---------- BOARD DETECTION ----------
+// Detected once in setup(); used to branch hardware-specific code.
+static bool isCore2 = false;
+
+// ---------- POWER KEY ----------
+// CoreS3/SE: M5.BtnPWR is broken, must read AXP2101 directly via I2C.
+//   Register 0x49 bit 1 = short press. Must read BEFORE M5.update().
+// Core2: M5.BtnPWR works via M5Unified — read AFTER M5.update().
 
 static inline uint8_t axpRead(uint8_t reg) {
   return M5.In_I2C.readRegister8(0x34, reg, 400000UL);
@@ -252,30 +262,30 @@ static inline void axpWrite(uint8_t reg, uint8_t val) {
   M5.In_I2C.writeRegister8(0x34, reg, val, 400000UL);
 }
 
-static uint32_t powerKeyReadyAt = 0;  // millis() after which power key is active
+static uint32_t powerKeyReadyAt = 0;
 
 void initPowerKey() {
-  // Enable short-press and release IRQs in IRQEN1 (0x41)
-  axpWrite(0x41, axpRead(0x41) | 0x03);
-  // Set minimum short-press timer to 0 (shortest possible)
-  axpWrite(0x25, 0x00);
-  // Clear any stale bits from the boot-press that turned the device on
-  axpWrite(0x49, 0x03);
-  // Grace period: ignore power key for 4 seconds after boot.
-  // The AXP2101 records the boot button press in reg 0x49; without this
-  // delay the first loop() iteration would immediately power off again.
+  if (isCore2) {
+    // M5Unified handles AXP192 / BtnPWR natively on Core2
+    powerKeyReadyAt = millis() + 4000;
+    return;
+  }
+  // CoreS3/SE — AXP2101 direct I2C
+  axpWrite(0x41, axpRead(0x41) | 0x03);  // enable short-press + release IRQs
+  axpWrite(0x25, 0x00);                  // minimum short-press timer
+  axpWrite(0x49, 0x03);                  // clear stale boot-press bits
   powerKeyReadyAt = millis() + 4000;
 }
 
 bool powerKeyShortPressed() {
-  uint8_t irq1 = axpRead(0x49);
-  // Always clear the bits so they don't accumulate
-  if (irq1 & 0x03) {
-    axpWrite(0x49, irq1 & 0x03);
-  }
-  // Ignore presses during the startup grace period
   if (millis() < powerKeyReadyAt) return false;
-  return (irq1 & 0x02) != 0;   // bit 1 = short press
+  if (isCore2) {
+    return M5.BtnPWR.wasClicked();
+  }
+  // CoreS3/SE — AXP2101 direct I2C
+  uint8_t irq1 = axpRead(0x49);
+  if (irq1 & 0x03) axpWrite(0x49, irq1 & 0x03);  // clear bits
+  return (irq1 & 0x02) != 0;
 }
 
 // ---------- SETUP ----------
@@ -286,9 +296,12 @@ void setup() {
   M5.Display.setRotation(1);
   M5.Display.setBrightness(128);
 
+  // Detect board type (must be after M5.begin)
+  isCore2 = (M5.getBoard() == m5::board_t::board_M5StackCore2);
+
   Serial.begin(115200);
   delay(100);
-  Serial.println("RGB Remote Starting...");
+  Serial.printf("RGB Remote Starting... Board: %s\n", isCore2 ? "Core2" : "CoreS3/SE");
 
   // --- Wake reason diagnostics ---
   esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
@@ -372,14 +385,20 @@ void setup() {
 
 // ---------- MAIN LOOP ----------
 void loop() {
-  // Power button: check BEFORE M5.update() so M5Unified can't clear the IRQ bits first.
-  // Hold the side button for ~0.5 s → plays shutdown animation then powers off.
-  if (powerKeyShortPressed()) {
+  // CoreS3/SE: check power button BEFORE M5.update() so M5Unified can't clear AXP2101 IRQ bits.
+  // Core2: M5.BtnPWR is updated by M5.update(), so it must be checked after.
+  if (!isCore2 && powerKeyShortPressed()) {
     Serial.println("Power button — shutting down");
-    showShutdownAnimation();   // blocking; calls powerOff() at end
+    showShutdownAnimation();
   }
 
   M5.update();
+
+  // Core2: power button check after M5.update()
+  if (isCore2 && powerKeyShortPressed()) {
+    Serial.println("Power button — shutting down");
+    showShutdownAnimation();
+  }
 
   // Check for USB/charging state changes
   bool currentChargingState = M5.Power.isCharging();
@@ -416,7 +435,7 @@ void loop() {
   if (wasTouching && !isTouching) {
     // Play click sound on release only if slider was actually dragged
     if (currentPage == PAGE_SETTINGS && sliderWasUsed) {
-      M5.Speaker.tone(4000, 20);
+      playClick();
     }
     
     wasTouching = false;
@@ -687,11 +706,11 @@ void sendColorData() {
 void drawPresetsPage() {
   // Load presets from lamp if not yet fetched
   if (!lightPresetsLoaded[currentLight]) {
-    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setFont(&UI_FONT);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.setTextDatum(middle_center);
-    M5.Display.setTextSize(1);
-    M5.Display.drawString("Loading...", 160, 100);
+    M5.Display.setTextSize(UI_FONT_SIZE);
+    M5.Display.drawString("LOADING...", 160, 100);
     requestLampPresets(currentLight);
     M5.Display.fillScreen(TFT_BLACK);
     drawSettingsNav();
@@ -721,12 +740,12 @@ void drawPresetsPage() {
       M5.Display.fillRect(x, y, sqW, sqW, M5.Display.color565(30, 30, 30));
     }
 
-    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setFont(&UI_FONT);
     M5.Display.setTextColor(M5.Display.color565(100, 100, 100), TFT_BLACK);
     M5.Display.setTextDatum(top_center);
-    M5.Display.setTextSize(1);
+    M5.Display.setTextSize(UI_FONT_SIZE);
     const char* label = (i < count) ? lightPresets[currentLight][i].name : "";
-    M5.Display.drawString(label, x + sqW / 2, y + sqW + 10);
+    M5.Display.drawString(upper(label), x + sqW / 2, y + sqW + 10);
   }
 }
 
@@ -753,11 +772,11 @@ void drawSettingsNav() {
 
   // Page name
   const char* name = settingsPageNames[currentPage - PAGE_PRESETS];
-  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setFont(&UI_FONT);
   M5.Display.setTextColor(SNAV_COL_ACT, TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(1);
-  M5.Display.drawString(name, SNAV_TITLE_X + SNAV_TITLE_W / 2, cy);
+  M5.Display.setTextSize(UI_FONT_SIZE);
+  M5.Display.drawString(upper(name), SNAV_TITLE_X + SNAV_TITLE_W / 2, cy);
 
   M5.Display.endWrite();
 }
@@ -964,8 +983,8 @@ void drawLightSelectPage() {
     M5.Display.setFont(&fonts::Font4);
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-    M5.Display.drawString("No devices", 160, 100);
-    M5.Display.drawString("found", 160, 140);
+    M5.Display.drawString("NO DEVICES", 160, 100);
+    M5.Display.drawString("FOUND", 160, 140);
     return;
   }
 
@@ -994,11 +1013,11 @@ void drawLightSelectPage() {
     }
 
     // Draw label below square
-    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setFont(&UI_FONT);
     M5.Display.setTextColor(M5.Display.color565(100, 100, 100), TFT_BLACK);
     M5.Display.setTextDatum(top_center);
-    M5.Display.setTextSize(1);
-    M5.Display.drawString(lightNames[i], x + squareSize / 2, y + squareSize + 10);
+    M5.Display.setTextSize(UI_FONT_SIZE);
+    M5.Display.drawString(upper(lightNames[i]), x + squareSize / 2, y + squareSize + 10);
   }
 }
 
@@ -1056,11 +1075,11 @@ void drawLightMainPage() {
     }
     
     // Draw label below square
-    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setFont(&UI_FONT);
     M5.Display.setTextColor(M5.Display.color565(100, 100, 100));  // Dark grey
     M5.Display.setTextDatum(top_center);
-    M5.Display.setTextSize(1);
-    M5.Display.drawString(labels[i], x + squareSize/2, y + squareSize + 10);
+    M5.Display.setTextSize(UI_FONT_SIZE);
+    M5.Display.drawString(upper(labels[i]), x + squareSize/2, y + squareSize + 10);
   }
 }
 
@@ -1127,11 +1146,11 @@ void drawVerticalSlider(int x, int centerY, int width, int height, int value, in
 void drawSliderLabel(int x, int centerY, int width, int height, const char* label) {
   int y = centerY + height/2 + 10;  // 10px below slider
 
-  M5.Display.setFont(&fonts::Font0);  // Small sans-serif font
+  M5.Display.setFont(&UI_FONT);  // Small sans-serif font
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));  // Dark grey
   M5.Display.setTextDatum(top_center);
-  M5.Display.setTextSize(1);
-  M5.Display.drawString(label, x + width/2, y);
+  M5.Display.setTextSize(UI_FONT_SIZE);
+  M5.Display.drawString(upper(label), x + width/2, y);
 }
 
 // Draw mode +/- buttons: two square white buttons (width × width).
@@ -1149,7 +1168,7 @@ void drawModeButtons(int x, int centerY, int width, int height, int value) {
   M5.Display.setFont(&fonts::Font4);
   M5.Display.setTextColor(TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(1);
+  M5.Display.setTextSize(UI_FONT_SIZE);
   M5.Display.drawString("+", x + width/2, top + btnH/2);
 
   // "−" button — bottom-aligned
@@ -1158,7 +1177,7 @@ void drawModeButtons(int x, int centerY, int width, int height, int value) {
   M5.Display.setFont(&fonts::Font4);
   M5.Display.setTextColor(TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(1);
+  M5.Display.setTextSize(UI_FONT_SIZE);
   M5.Display.drawString("-", x + width/2, minusBtnY + btnH/2);
 }
 
@@ -1166,11 +1185,12 @@ void drawModeButtons(int x, int centerY, int width, int height, int value) {
 void navigateToPage(uint8_t page, bool playSound) {
   // Play subtle click sound only if requested (button press, not auto-return)
   if (playSound) {
-    M5.Speaker.tone(4000, 20);  // 4kHz for 20ms - subtle click
+    playClick();  // 4kHz for 20ms - subtle click
   }
   
   previousPage = currentPage;
   currentPage = page;
+  if (IS_SETTINGS_PAGE(page)) lastSettingsPage = page;
   lastPageChangeTime = millis();
   ignoreFirstTouch = true;  // Ignore the first touch after arriving on new page
   drawUI();
@@ -1286,7 +1306,7 @@ void handleTouch() {
             
             if (i == 0) {
               // ON/OFF toggle
-              M5.Speaker.tone(4000, 20);  // Click sound
+              playClick();  // Click sound
               currentOn = !currentOn;
               lightOn[currentLight] = currentOn;
               sendColorData();
@@ -1309,7 +1329,7 @@ void handleTouch() {
             } else if (i == 1) {
               navigateToPage(PAGE_COLOR_SELECTOR, true);
             } else if (i == 2) {
-              navigateToPage(PAGE_PRESETS, true);  // Enter settings group at Presets
+              navigateToPage(lastSettingsPage, true);  // Return to last visited settings sub-page
             }
             
             wasTouching = true;
@@ -1350,7 +1370,7 @@ void handleTouch() {
             lightSpeed[currentLight]   = currentSpeed;
             lightFadeout[currentLight] = currentFadeout;
             lastInteractionTime = now;
-            M5.Speaker.tone(4000, 20);
+            playClick();
             sendColorData();
             wasTouching = true;
             return;
@@ -1519,20 +1539,23 @@ void checkSleep() {
     // Display content remains in memory, just not visible
   }
   
-  // Sleep timeout (4 minutes = 240 seconds)
+  // Sleep timeout
   if (timeSinceTouch >= SLEEP_TIMEOUT) {
     Serial.println("Entering deep sleep...");
     Serial.println("Touch screen or press power button to wake up");
     delay(100);
-    
-    // Wake sources:
-    // GPIO 21 = Touch screen interrupt (FT6336U) — RTC GPIO, works with ext1
-    // Power button wake is handled automatically by the AXP2101 PMIC via M5.Power.deepSleep()
-    // NOTE: GPIO 46 is NOT an RTC GPIO on ESP32-S3, so it cannot be used for ext1 wake.
-    esp_sleep_enable_ext1_wakeup((1ULL << GPIO_NUM_21), ESP_EXT1_WAKEUP_ANY_LOW);
 
-    // Enter deep sleep via M5Unified — configures AXP2101 PMIC for power-button wake
-    // After wake, device restarts from setup(); settings are preserved on SD card
+    if (isCore2) {
+      // Core2 (ESP32): touch INT on GPIO39 (RTC GPIO, active LOW)
+      // Power button wake handled by AXP192 via M5.Power.deepSleep()
+      esp_sleep_enable_ext0_wakeup(GPIO_NUM_39, 0);
+    } else {
+      // CoreS3/SE (ESP32-S3): touch INT on GPIO21 (RTC GPIO)
+      // NOTE: GPIO46 is NOT an RTC GPIO on ESP32-S3.
+      esp_sleep_enable_ext1_wakeup((1ULL << GPIO_NUM_21), ESP_EXT1_WAKEUP_ALL_LOW);
+    }
+
+    // M5Unified configures the PMIC (AXP192/AXP2101) for power-button wake
     M5.Power.deepSleep(0);
   }
 }
@@ -1610,6 +1633,28 @@ bool checkAccelerometer() {
   }
   
   return false;
+}
+
+// ---------- UPPERCASE HELPER ----------
+// Converts string to uppercase in a shared buffer — use immediately, don't store.
+static char _upperBuf[32];
+const char* upper(const char* s) {
+  int i = 0;
+  for (; s[i] && i < (int)sizeof(_upperBuf) - 1; i++)
+    _upperBuf[i] = toupper((unsigned char)s[i]);
+  _upperBuf[i] = '\0';
+  return _upperBuf;
+}
+
+// ---------- CLICK FEEDBACK ----------
+void playClick() {
+
+  if (isCore2) {
+    M5.Power.setVibration(255); delay(75);
+    M5.Power.setVibration(0);   delay(10);
+  } else {
+    M5.Speaker.tone(4000, 20);
+  }
 }
 
 // ---------- HSV TO RGB CONVERSION ----------
