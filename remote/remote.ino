@@ -33,7 +33,7 @@ uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 
 // Display settings
 #define DISPLAY_TIMEOUT 30000   // 30 seconds
-#define SLEEP_TIMEOUT 240000    // 240 seconds (4 minutes) - doubled from 120
+#define SLEEP_TIMEOUT 120000    // 120 seconds (2 minutes)
 
 // Light color bar at top
 #define LIGHT_BAR_HEIGHT 25         // Increased (was 20)
@@ -290,6 +290,18 @@ void setup() {
   delay(100);
   Serial.println("RGB Remote Starting...");
 
+  // --- Wake reason diagnostics ---
+  esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
+  switch (wakeReason) {
+    case ESP_SLEEP_WAKEUP_EXT1:   Serial.println("[WAKE] Touch screen (EXT1/GPIO21)"); break;
+    case ESP_SLEEP_WAKEUP_TIMER:  Serial.println("[WAKE] Timer"); break;
+    case ESP_SLEEP_WAKEUP_EXT0:   Serial.println("[WAKE] EXT0"); break;
+    default: Serial.printf("[WAKE] Normal power-on or reset (cause=%d)\n", wakeReason); break;
+  }
+  Serial.printf("[BATT] Level: %d%%  Charging: %s\n",
+                M5.Power.getBatteryLevel(),
+                M5.Power.isCharging() ? "yes" : "no");
+
   WiFi.mode(WIFI_STA);
   Serial.print("MAC Address: ");
   Serial.println(WiFi.macAddress());
@@ -421,7 +433,18 @@ void loop() {
   
   // Check for sleep conditions
   checkSleep();
-  
+
+  // --- Periodic battery/state diagnostics (every 60 seconds) ---
+  static unsigned long lastBattLog = 0;
+  if (millis() - lastBattLog >= 60000) {
+    lastBattLog = millis();
+    Serial.printf("[BATT] %d%%  Charging: %s  Display: %s  TimeSinceTouch: %lus\n",
+                  M5.Power.getBatteryLevel(),
+                  M5.Power.isCharging() ? "yes" : "no",
+                  displayOn ? "on" : "off",
+                  (millis() - lastTouchTime) / 1000);
+  }
+
   delay(50);
 }
 
