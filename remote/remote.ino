@@ -33,8 +33,8 @@ static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 
 // Display settings
-#define DISPLAY_TIMEOUT 30000   // 30 seconds
-#define SLEEP_TIMEOUT 120000    // 120 seconds (2 minutes)
+#define DISPLAY_TIMEOUT 20000   // 0 seconds
+#define SLEEP_TIMEOUT 90000    // 90 seconds
 
 // Light color bar at top
 #define LIGHT_BAR_HEIGHT 25         // Increased (was 20)
@@ -43,13 +43,14 @@ uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 #define LIGHT_BAR_GAP 3  // Gap between light bar and content below
 
 // Page system - new flow
-#define NUM_PAGES 6
+#define NUM_PAGES 7
 #define PAGE_LOADING        0
 #define PAGE_LIGHT_SELECT   1
 #define PAGE_LIGHT_MAIN     2
 #define PAGE_PRESETS        3   // Settings group: first sub-page
-#define PAGE_COLOR_SELECTOR 4
-#define PAGE_SETTINGS       5
+#define PAGE_HSV            4
+#define PAGE_COLOR_SELECTOR 5
+#define PAGE_SETTINGS       6
 #define IS_SETTINGS_PAGE(p) ((p) >= PAGE_PRESETS && (p) <= PAGE_SETTINGS)
 
 // Auto-return timeout
@@ -84,7 +85,7 @@ uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 // Battery indicator settings (top right corner with padding)
 #define BATTERY_INDICATOR_X 313  // 5px padding: 320 - 5 - (radius*2) = 320 - 5 - 2 = 313 (center)
 #define BATTERY_INDICATOR_Y 7    // 5px padding: 0 + 5 + radius = 5 + 2 = 7 (center)
-#define BATTERY_INDICATOR_RADIUS 2  // 2px radius = 4px diameter (was 3)
+#define BATTERY_INDICATOR_RADIUS 4  // 4px radius = 8px diameter
 
 // Button dimensions for new UI
 #define BUTTON_MARGIN 20
@@ -166,7 +167,7 @@ bool lastChargingState = false;
 // Page navigation history for auto-return
 uint8_t previousPage = PAGE_LIGHT_SELECT;
 uint8_t lastSettingsPage = PAGE_SETTINGS;  // Last visited settings sub-page
-const char* settingsPageNames[] = { "Presets", "Color", "Settings" };
+const char* settingsPageNames[] = { "Presets", "HSV", "Color", "Settings" };
 bool ignoreFirstTouch = false;  // Ignore first touch after page navigation
 
 // Single debounce variable and time for ALL buttons, sliders, interactions
@@ -227,6 +228,7 @@ void drawLightSelectPage();
 void drawLightMainPage();
 void drawColorSelectorPage();
 void drawSettingsPage();
+void drawHSVPage();
 void drawVerticalSlider(int x, int centerY, int width, int height, int value, int minVal, int maxVal);
 void drawSliderLabel(int x, int centerY, int width, int height, const char* label);
 void drawModeButtons(int x, int centerY, int width, int height, int value);
@@ -420,7 +422,7 @@ void loop() {
     if (!wasTouching) {
       // Fresh touch down - handle it
       handleTouch();
-    } else if ((currentPage == PAGE_COLOR_SELECTOR || currentPage == PAGE_SETTINGS) && !ignoreFirstTouch) {
+    } else if ((currentPage == PAGE_COLOR_SELECTOR || currentPage == PAGE_SETTINGS || currentPage == PAGE_HSV) && !ignoreFirstTouch) {
       // Color selector and settings sliders need continuous drag updates
       handleTouch();
     }
@@ -430,7 +432,7 @@ void loop() {
   // Detect touch release
   if (wasTouching && !isTouching) {
     // Play click sound on release only if slider was actually dragged
-    if (currentPage == PAGE_SETTINGS && sliderWasUsed) {
+    if ((currentPage == PAGE_SETTINGS || currentPage == PAGE_HSV) && sliderWasUsed) {
       playClick();
     }
     
@@ -798,6 +800,7 @@ void drawUI() {
     case PAGE_LIGHT_SELECT:   drawLightSelectPage();    break;
     case PAGE_LIGHT_MAIN:     drawLightMainPage();      break;
     case PAGE_PRESETS:        drawPresetsPage();        break;
+    case PAGE_HSV:            drawHSVPage();            break;
     case PAGE_COLOR_SELECTOR: drawColorSelectorPage();  break;
     case PAGE_SETTINGS:       drawSettingsPage();       break;
   }
@@ -919,6 +922,18 @@ void drawBatteryIndicator() {
     batteryColor = M5.Display.color565(255, 0, 0);
   }
   
+  // Clear the indicator area (text + dot) before redrawing to avoid ghosting
+  M5.Display.fillRect(270, 0, 50, 14, TFT_BLACK);
+
+  // Draw percentage text just left of the dot
+  char buf[6];
+  snprintf(buf, sizeof(buf), "%d%%", batteryLevel);
+  M5.Display.setFont(&fonts::Font0);
+  M5.Display.setTextSize(1.0f);
+  M5.Display.setTextDatum(middle_right);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString(buf, BATTERY_INDICATOR_X - BATTERY_INDICATOR_RADIUS - 3, BATTERY_INDICATOR_Y + 1);
+
   // Draw battery indicator circle
   M5.Display.fillCircle(BATTERY_INDICATOR_X, BATTERY_INDICATOR_Y, BATTERY_INDICATOR_RADIUS, batteryColor);
 }
@@ -1071,6 +1086,28 @@ void drawLightMainPage() {
 void drawColorSelectorPage() {
   syncCwFromColor();
   drawColorWheelCanvas();
+}
+
+// ---------- DRAW HSV PAGE ----------
+void drawHSVPage() {
+  int sliderWidth  = 60;
+  int sliderHeight = 150;
+  int spacing      = 10;
+  int totalWidth   = (sliderWidth * 3) + (spacing * 2);
+  int startX       = (320 - totalWidth) / 2;
+  int centerY      = (WHEEL_Y + SNAV_Y) / 2 - 15;
+
+  // Hue (0-255)
+  drawVerticalSlider(startX, centerY, sliderWidth, sliderHeight, currentHue, 0, 255);
+  drawSliderLabel(startX, centerY, sliderWidth, sliderHeight, "Hue");
+
+  // Saturation (0-255)
+  drawVerticalSlider(startX + (sliderWidth + spacing), centerY, sliderWidth, sliderHeight, currentSat, 0, 255);
+  drawSliderLabel(startX + (sliderWidth + spacing), centerY, sliderWidth, sliderHeight, "Sat");
+
+  // Brightness (0-255)
+  drawVerticalSlider(startX + (sliderWidth + spacing) * 2, centerY, sliderWidth, sliderHeight, currentVal, 0, 255);
+  drawSliderLabel(startX + (sliderWidth + spacing) * 2, centerY, sliderWidth, sliderHeight, "Bright");
 }
 
 // ---------- DRAW SETTINGS PAGE ----------
@@ -1392,6 +1429,60 @@ void handleTouch() {
       }
       break;
 
+    case PAGE_HSV:
+      {
+        int sliderWidth  = 60;
+        int sliderHeight = 150;
+        int spacing      = 10;
+        int totalWidth   = (sliderWidth * 3) + (spacing * 2);
+        int startX       = (320 - totalWidth) / 2;
+        int centerY      = (WHEEL_Y + SNAV_Y) / 2 - 15;
+        int sliderY      = centerY - sliderHeight / 2;
+
+        int column = -1;
+        for (int col = 0; col < 3; col++) {
+          int colX = startX + col * (sliderWidth + spacing);
+          if (touchX >= colX && touchX <= colX + sliderWidth) {
+            column = col;
+            break;
+          }
+        }
+
+        if (column >= 0) {
+          int constrainedY = constrain(touchY, sliderY, sliderY + sliderHeight);
+          float yPercent = 1.0 - ((float)(constrainedY - sliderY) / (float)sliderHeight);
+          yPercent = constrain(yPercent, 0.0, 1.0);
+
+          int newValue = (int)(yPercent * 255);
+          int oldValue = 0;
+
+          if (column == 0) {
+            oldValue = currentHue;
+            currentHue = constrain(newValue, 0, 255);
+            lightHue[currentLight] = currentHue;
+          } else if (column == 1) {
+            oldValue = currentSat;
+            currentSat = constrain(newValue, 0, 255);
+            lightSat[currentLight] = currentSat;
+          } else if (column == 2) {
+            oldValue = currentVal;
+            currentVal = constrain(newValue, 0, 255);
+            lightVal[currentLight] = currentVal;
+          }
+
+          if (newValue != oldValue) {
+            sliderWasUsed = true;
+            sendColorData();
+            int sliderX = startX + column * (sliderWidth + spacing);
+            uint8_t drawVal = (column == 0) ? currentHue : (column == 1) ? currentSat : currentVal;
+            drawVerticalSlider(sliderX, centerY, sliderWidth, sliderHeight, drawVal, 0, 255);
+          }
+        }
+
+        wasTouching = true;
+      }
+      break;
+
     case PAGE_SETTINGS:
       {
         // 4 equal-width columns: 3 sliders + 1 mode +/- widget
@@ -1625,12 +1716,13 @@ const char* upper(const char* s) {
 // ---------- CLICK FEEDBACK ----------
 void playClick() {
 
-  if (isCore2) {
-    M5.Power.setVibration(255); delay(75);
-    M5.Power.setVibration(0);   delay(10);
-  } else {
-    M5.Speaker.tone(4000, 20);
-  }
+  // if (isCore2) {
+  //   M5.Power.setVibration(255); delay(75);
+  //   M5.Power.setVibration(0);   delay(10);
+  // } else {
+     M5.Speaker.tone(4000, 10);
+  // }
+
 }
 
 // ---------- HSV TO RGB CONVERSION ----------
