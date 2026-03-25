@@ -55,9 +55,6 @@ uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 // Auto-return timeout
 #define AUTO_RETURN_TIMEOUT 5000  // 3 seconds
 
-// Auto-return toggle button (small triangle, top-left corner of light bar)
-#define AUTO_BTN_HIT 25  // hit-area: 0..24 in both X and Y (fits inside the 25px bar)
-
 // Page button (lower right corner)
 #define PAGE_BUTTON_X 285
 #define PAGE_BUTTON_Y 215
@@ -225,7 +222,6 @@ void drawPresetsPage();
 void drawSettingsNav();
 void handleSettingsNavTap(int tx, int ty);
 void drawLightBar();
-void drawAutoReturnBtn();
 void drawBatteryIndicator();
 void drawLightSelectPage();
 void drawLightMainPage();
@@ -536,8 +532,8 @@ void OnDataRecvFromLight(const esp_now_recv_info_t *recv_info, const uint8_t *da
       lightSpeed[i]   = msg->speed;
       lightFadeout[i] = msg->fadeout;
       lightStateReceived[i] = true;
-      Serial.printf("State received from Light %d (%s): H=%d S=%d V=%d ON=%d Mode=%d\n",
-                    i + 1, lightNames[i], msg->h, msg->s, msg->v, msg->power, msg->mode);
+      Serial.printf("State received from Light %d (%s): H=%d S=%d V=%d ON=%d Mode=%d Speed=%d Fade=%d\n",
+                    i + 1, lightNames[i], msg->h, msg->s, msg->v, msg->power, msg->mode, msg->speed, msg->fadeout);
       break;
     }
   }
@@ -695,7 +691,7 @@ void sendColorData() {
   esp_err_t result = esp_now_send(lightMacAddresses[currentLight], (uint8_t *) &outgoingData, sizeof(outgoingData));
   
   if (result == ESP_OK) {
-    Serial.printf("Sent to Light %d: H=%d S=%d V=%d Power=%d Mode=%d\n", currentLight + 1, currentHue, currentSat, currentVal, currentOn, 0);
+    Serial.printf("Sent to Light %d: H=%d S=%d V=%d Power=%d Mode=%d Speed=%d Fade=%d\n", currentLight + 1, currentHue, currentSat, currentVal, currentOn, currentMode, currentSpeed, currentFadeout);
   } else {
     Serial.printf("Error sending to Light %d\n", currentLight + 1);
   }
@@ -844,20 +840,8 @@ void drawLightBar() {
     }
   }
 
-  // Draw the auto-return toggle button on top
-  drawAutoReturnBtn();
 }
 
-// ---------- DRAW AUTO-RETURN TOGGLE BUTTON ----------
-// Small right-pointing triangle in the top-left corner of the light bar.
-// White = auto-return ON  |  Dark grey = auto-return OFF
-void drawAutoReturnBtn() {
-  // Black border triangle
-  M5.Display.fillTriangle(2, 3, 2, 22, 19, 12, TFT_BLACK);
-  // Filled inner triangle
-  uint16_t c = autoReturnEnabled ? TFT_WHITE : M5.Display.color565(70, 70, 70);
-  M5.Display.fillTriangle(4, 6, 4, 19, 16, 12, c);
-}
 
 // ---------- DRAW COLOR WHEEL ----------
 // ---------- COLOR WHEEL CANVAS (pre-rendered, flicker-free) ----------
@@ -964,9 +948,9 @@ void switchToLight(uint8_t lightIndex) {
   currentSpeed   = lightSpeed[currentLight];
   currentFadeout = lightFadeout[currentLight];
 
-  Serial.printf("Switched to Light %d (%s) H=%d S=%d V=%d ON=%d\n",
+  Serial.printf("Switched to Light %d (%s) H=%d S=%d V=%d ON=%d Mode=%d Speed=%d Fade=%d\n",
                 currentLight + 1, lightNames[currentLight],
-                currentHue, currentSat, currentVal, currentOn);
+                currentHue, currentSat, currentVal, currentOn, currentMode, currentSpeed, currentFadeout);
 
   // Update light bar to show active light indicator
   drawLightBar();
@@ -1234,14 +1218,6 @@ void handleTouch() {
   // Reset auto-return timer on any touch
   lastPageChangeTime = now;
 
-  // Auto-return toggle button — top-left corner of the light bar (all pages)
-  if (touchX < AUTO_BTN_HIT && touchY < AUTO_BTN_HIT) {
-    autoReturnEnabled = !autoReturnEnabled;
-    lastInteractionTime = now;
-    drawAutoReturnBtn();
-    wasTouching = true;
-    return;
-  }
 
   // Settings sub-pages nav bar tap
   if (IS_SETTINGS_PAGE(currentPage) && touchY >= SNAV_Y) {
