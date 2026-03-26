@@ -6,8 +6,8 @@
  * - Hue: angle around the circle
  * - Brightness/Lightness: radial distance (center=white/bright, edge=dark/vivid)
  * - Saturation: radial distance (center=desaturated/white, edge=saturated)
- * - Display timeout after 10 seconds with pickup wake
- * - Sleep mode after 60 seconds with accelerometer wake
+ * - Display timeout after 20 seconds with pickup wake
+ * - Power off via power button (stays on when charging)
  * - ESP-NOW transmission to Light device
  * - Runtime board detection (CoreS3/SE vs Core2)
  */
@@ -15,7 +15,6 @@
 #include <M5Unified.h>
 #include <esp_now.h>
 #include <WiFi.h>
-#include <esp_sleep.h>
 // Maximum number of discoverable lights (runtime count stored in numLights)
 #define MAX_LIGHTS 8
 
@@ -33,8 +32,8 @@ static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 
 // Display settings
-#define DISPLAY_TIMEOUT 20000   // 0 seconds
-#define SLEEP_TIMEOUT 90000    // 90 seconds
+#define DISPLAY_TIMEOUT 20000   // 20 seconds before display dims
+#define POWER_OFF_TIMEOUT 60000  // 1 minute before auto power off (when not charging)
 
 // Light color bar at top
 #define LIGHT_BAR_HEIGHT 25         // Increased (was 20)
@@ -92,9 +91,8 @@ uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 #define BUTTON_HEIGHT 60
 #define BUTTON_SPACING 10
 
-// UI font and size
+// UI font and size //https://m5stack.lang-ship.com/howto/m5gfx/font/#google_vignette 
 #define UI_FONT      Font2 //FreeSans9pt7b
-#define UI_FONT_SIZE 1
 
 // Accelerometer wake threshold
 #define ACCEL_THRESHOLD 0.1  // g-force threshold for wake (very sensitive)
@@ -301,14 +299,6 @@ void setup() {
   delay(100);
   Serial.printf("RGB Remote Starting... Board: %s\n", isCore2 ? "Core2" : "CoreS3/SE");
 
-  // --- Wake reason diagnostics ---
-  esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
-  switch (wakeReason) {
-    case ESP_SLEEP_WAKEUP_EXT1:   Serial.println("[WAKE] Touch screen (EXT1/GPIO21)"); break;
-    case ESP_SLEEP_WAKEUP_TIMER:  Serial.println("[WAKE] Timer"); break;
-    case ESP_SLEEP_WAKEUP_EXT0:   Serial.println("[WAKE] EXT0"); break;
-    default: Serial.printf("[WAKE] Normal power-on or reset (cause=%d)\n", wakeReason); break;
-  }
   Serial.printf("[BATT] Level: %d%%  Charging: %s\n",
                 M5.Power.getBatteryLevel(),
                 M5.Power.isCharging() ? "yes" : "no");
@@ -386,16 +376,24 @@ void loop() {
   // CoreS3/SE: check power button BEFORE M5.update() so M5Unified can't clear AXP2101 IRQ bits.
   // Core2: M5.BtnPWR is updated by M5.update(), so it must be checked after.
   if (!isCore2 && powerKeyShortPressed()) {
-    Serial.println("Power button — shutting down");
-    showShutdownAnimation();
+    if (!M5.Power.isCharging()) {
+      Serial.println("Power button — shutting down");
+      showShutdownAnimation();
+    } else {
+      Serial.println("Power button — ignored (charging)");
+    }
   }
 
   M5.update();
 
   // Core2: power button check after M5.update()
   if (isCore2 && powerKeyShortPressed()) {
-    Serial.println("Power button — shutting down");
-    showShutdownAnimation();
+    if (!M5.Power.isCharging()) {
+      Serial.println("Power button — shutting down");
+      showShutdownAnimation();
+    } else {
+      Serial.println("Power button — ignored (charging)");
+    }
   }
 
   // Check for USB/charging state changes
@@ -707,7 +705,7 @@ void drawPresetsPage() {
     M5.Display.setFont(&UI_FONT);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.setTextDatum(middle_center);
-    M5.Display.setTextSize(UI_FONT_SIZE);
+    M5.Display.setTextSize(1);
     M5.Display.drawString("LOADING...", 160, 100);
     requestLampPresets(currentLight);
     M5.Display.fillScreen(TFT_BLACK);
@@ -741,7 +739,7 @@ void drawPresetsPage() {
     M5.Display.setFont(&UI_FONT);
     M5.Display.setTextColor(M5.Display.color565(100, 100, 100), TFT_BLACK);
     M5.Display.setTextDatum(top_center);
-    M5.Display.setTextSize(UI_FONT_SIZE);
+    M5.Display.setTextSize(1);
     const char* label = (i < count) ? lightPresets[currentLight][i].name : "";
     M5.Display.drawString(upper(label), x + sqW / 2, y + sqW + 10);
   }
@@ -773,7 +771,7 @@ void drawSettingsNav() {
   M5.Display.setFont(&UI_FONT);
   M5.Display.setTextColor(SNAV_COL_ACT, TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(UI_FONT_SIZE);
+  M5.Display.setTextSize(1);
   M5.Display.drawString(upper(name), SNAV_TITLE_X + SNAV_TITLE_W / 2, cy);
 
   M5.Display.endWrite();
@@ -1015,7 +1013,7 @@ void drawLightSelectPage() {
     M5.Display.setFont(&UI_FONT);
     M5.Display.setTextColor(M5.Display.color565(100, 100, 100), TFT_BLACK);
     M5.Display.setTextDatum(top_center);
-    M5.Display.setTextSize(UI_FONT_SIZE);
+    M5.Display.setTextSize(1);
     M5.Display.drawString(upper(lightNames[i]), x + squareSize / 2, y + squareSize + 10);
   }
 }
@@ -1077,7 +1075,7 @@ void drawLightMainPage() {
     M5.Display.setFont(&UI_FONT);
     M5.Display.setTextColor(M5.Display.color565(100, 100, 100));  // Dark grey
     M5.Display.setTextDatum(top_center);
-    M5.Display.setTextSize(UI_FONT_SIZE);
+    M5.Display.setTextSize(1);
     M5.Display.drawString(upper(labels[i]), x + squareSize/2, y + squareSize + 10);
   }
 }
@@ -1170,7 +1168,7 @@ void drawSliderLabel(int x, int centerY, int width, int height, const char* labe
   M5.Display.setFont(&UI_FONT);  // Small sans-serif font
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));  // Dark grey
   M5.Display.setTextDatum(top_center);
-  M5.Display.setTextSize(UI_FONT_SIZE);
+  M5.Display.setTextSize(1);
   M5.Display.drawString(upper(label), x + width/2, y);
 }
 
@@ -1189,7 +1187,7 @@ void drawModeButtons(int x, int centerY, int width, int height, int value) {
   M5.Display.setFont(&fonts::Font4);
   M5.Display.setTextColor(TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(UI_FONT_SIZE);
+  M5.Display.setTextSize(1);
   M5.Display.drawString("+", x + width/2, top + btnH/2);
 
   // "−" button — bottom-aligned
@@ -1198,7 +1196,7 @@ void drawModeButtons(int x, int centerY, int width, int height, int value) {
   M5.Display.setFont(&fonts::Font4);
   M5.Display.setTextColor(TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(UI_FONT_SIZE);
+  M5.Display.setTextSize(1);
   M5.Display.drawString("-", x + width/2, minusBtnY + btnH/2);
 }
 
@@ -1598,32 +1596,17 @@ void checkSleep() {
     }
   }
   
-  // Display timeout (10 seconds) - just turn off backlight
+  // Display timeout - just turn off backlight
   if (displayOn && timeSinceTouch >= DISPLAY_TIMEOUT) {
     Serial.println("Display timeout - turning off backlight (pickup to wake)");
     M5.Display.setBrightness(0);
     displayOn = false;
-    // Display content remains in memory, just not visible
   }
-  
-  // Sleep timeout
-  if (timeSinceTouch >= SLEEP_TIMEOUT) {
-    Serial.println("Entering deep sleep...");
-    Serial.println("Touch screen or press power button to wake up");
-    delay(100);
 
-    if (isCore2) {
-      // Core2 (ESP32): touch INT on GPIO39 (RTC GPIO, active LOW)
-      // Power button wake handled by AXP192 via M5.Power.deepSleep()
-      esp_sleep_enable_ext0_wakeup(GPIO_NUM_39, 0);
-    } else {
-      // CoreS3/SE (ESP32-S3): touch INT on GPIO21 (RTC GPIO)
-      // NOTE: GPIO46 is NOT an RTC GPIO on ESP32-S3.
-      esp_sleep_enable_ext1_wakeup((1ULL << GPIO_NUM_21), ESP_EXT1_WAKEUP_ALL_LOW);
-    }
-
-    // M5Unified configures the PMIC (AXP192/AXP2101) for power-button wake
-    M5.Power.deepSleep(0);
+  // Auto power off after 2 minutes of inactivity (only when not charging)
+  if (timeSinceTouch >= POWER_OFF_TIMEOUT && !M5.Power.isCharging()) {
+    Serial.println("Auto power off — no activity and not charging");
+    showShutdownAnimation();
   }
 }
 
