@@ -2,20 +2,29 @@
  * Nano Circle - ESP-NOW LED Nano Circle Fixture
  * Jonas Vorwerk 2026
  *
- * ESP8266 + APA102 (ring / 1-D strip)
+ * ESP8266 + WS2812 (60 LED ring)
  * Data: GPIO 12
  * Receives commands from M5Stack remote via ESP-NOW
  *
  * Modes (set via remote):
- *   0 - Solid color
- *   1 - Confetti
- *   2 - Noise flow (Perlin noise, fixed hue)
- *   3 - Noise flow with slowly drifting hue
- *   5 - Wave 1: sine brightness wave
- *   6 - Wave 2: sawtooth scanning dot
- *   7 - Wave 3: individual oscillation (each LED its own frequency)
- *   8 - Wave 4: full ring pulse
- *   9 - Move a Dot  ← default
+ *   0  - Solid color
+ *   1  - Confetti          (speed = spawn rate, fadeout = fade depth)
+ *   2  - Noise flow        (Perlin noise, fixed hue)
+ *   3  - Noise flow hue    (Perlin noise, drifting hue)
+ *   4  - Half circle       (rotating split, speed = direction & rate)
+ *   5  - Wave 1: sine brightness wave
+ *   6  - Wave 2: sawtooth scanning dot
+ *   7  - Wave 3: individual oscillation
+ *   8  - Wave 4: full ring pulse
+ *   9  - Move a dot
+ *   10 - Color wipe        (alternates between hue and opposite)
+ *   11 - Palette rotate    (gradient spin, speed = direction & rate)
+ *   12 - Candle            (speed = flicker rate, fadeout = depth)
+ *   13 - Sunrise/sunset    (slow hue build from red to yellow)
+ *   14 - Breathing         (whole ring inhales/exhales)
+ *   15 - Ocean wave        (rolling brightness wave)
+ *   16 - Northern lights   (noise-based hue drift)
+ *   17 - TV ambient        (random color section shifts)  ← default
  */
 
 #include <ESP8266WiFi.h>
@@ -28,6 +37,7 @@
 #define EEPROM_ADDR_DATA  1
 
 #define DEVICE_NAME        "NanoCircle"
+#define MAX_MODE           17
 
 #define NUM_LEDS           60
 
@@ -55,6 +65,39 @@ unsigned long previousMillisHue = 0;
 
 // Confetti state
 unsigned long previousMillisConfetti = 0;
+
+// Half circle rotation state
+float halfCircleOffset = 0.0f;
+
+// Color wipe state
+int   wipePos       = 0;
+bool  wipeReverse   = false;
+unsigned long previousMillisWipe = 0;
+
+// Palette rotate state
+float paletteOffset = 0.0f;
+
+// Candle / fireplace state
+uint16_t candleZ = 0;
+
+// Sunrise state
+float sunriseProgress = 0.0f;
+
+// Breathing state
+float breathPhase = 0.0f;
+
+// Ocean wave state
+float wavePhase = 0.0f;
+
+// Northern lights state
+uint16_t northernZ = 0;
+float    northernHueShift = 0.0f;
+
+// TV ambient state
+uint8_t  tvHue[60];
+uint8_t  tvBri[60];
+unsigned long previousMillisTv = 0;
+
 
 // Move a Dot state
 #define NUM_DOTS              5
@@ -91,14 +134,14 @@ typedef struct {
 } preset_packet;
 
 static const LampPreset lampPresets[MAX_PRESETS] = {
-  { "Warm",      18, 200, 255, true, 0, 128,  10 },  // Warm amber, solid
-  { "Cool",     155, 130, 230, true, 0, 128,  10 },  // Cool blue-white, solid
-  { "Vivid",      0, 255, 255, true, 0, 128,  10 },  // Saturated red, solid
-  { "Ocean",    135, 255, 200, true, 0, 128,  10 },  // Deep teal, solid
+  { "Circle",    30, 200, 220, true, 9, 30,  59 }, // Move a Dot
+  { "Dimmed", 30, 200, 73, true, 9, 49,  0 },  // Move a Dot Dimmed
+  { "Sun",     20, 220,  200, true, 9, 128,  10 },  // Move a Dot Sun
+  { "Ocean",    165, 255, 177, true, 9, 67,  81 },  // Move a Dot Blue
   { "Confetti",  80, 255, 255, true, 1, 180,  80 },  // Green confetti
-  { "Dots",      30, 200, 220, true, 9, 128,  10 },  // Move a Dot
-  { "Wave",     170, 255, 220, true, 5, 150,  10 },  // Sine wave, blue
-  { "Night",     20, 220,  60, true, 0, 128,  10 },  // Dim warm
+  { "Warm",      18, 200, 255, true, 0, 128,  10 },  // Warm amber, solid
+  { "Wave",     30, 200, 255, true, 5, 42,  0 },  // Wave
+  { "Glow",      48, 180, 160, true, 2, 42,  10 },  // Glow
 };
 
 // ---------- ESP-NOW MESSAGE STRUCT ----------
@@ -113,6 +156,7 @@ typedef struct struct_message {
   bool requestState;   // If true: reply with current state, don't apply changes
   bool isDiscovery;    // If true: discovery broadcast — reply with device name
   char deviceName[16]; // Device name sent in discovery reply
+  int  maxMode;        // Max mode index, sent by lamp during discovery
   bool requestPresets; // If true: reply with preset list
 } struct_message;
 
@@ -127,6 +171,7 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingDataBytes, uint8_t len) {
     struct_message response = {};
     response.isDiscovery = true;
     strncpy(response.deviceName, DEVICE_NAME, sizeof(response.deviceName) - 1);
+    response.maxMode = MAX_MODE;
     esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
     esp_now_send(mac, (uint8_t*)&response, sizeof(response));
     Serial.println("Discovery request received — sending name back to remote");
@@ -298,16 +343,18 @@ void solidColor() {
 
 // ---------- CONFETTI ----------
 void confetti() {
-  uint8_t fadeAmount = map(fadeout, 0, 255, 2, 50);
-  fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+  if (fadeout > 0) {
+    uint8_t fadeAmount = map(fadeout, 0, 255, 2, 30);
+    fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+  }
 
   unsigned long now           = millis();
-  unsigned long spawnInterval = map(speed, 0, 255, 150, 16);
+  unsigned long spawnInterval = map(speed, 0, 255, 600, 16);
 
   if (now - previousMillisConfetti >= spawnInterval) {
     previousMillisConfetti = now;
     int pos = random16(NUM_LEDS);
-    leds[pos] += CHSV(hue + random8(64), sat, val);
+    leds[pos] += CHSV(hue, sat, val);
   }
 }
 
@@ -342,7 +389,7 @@ void noiseFlowHue() {
 
 // ---------- WAVE HELPERS ----------
 uint8_t getBpm() {
-  return map(speed, 0, 255, 5, 60);
+  return map(speed, 0, 255, 3, 60);
 }
 
 // Wave 1: sine brightness wave across the ring
@@ -428,6 +475,138 @@ void moveADot() {
 }
 
 // ---------- DISPLAY LEDS ----------
+// ---------- HALF CIRCLE ----------
+void halfCircle() {
+  float rotationSpeed = ((speed - 128) / 128.0f) * 0.25f;
+  halfCircleOffset += rotationSpeed;
+  if (halfCircleOffset >= NUM_LEDS) halfCircleOffset -= NUM_LEDS;
+  if (halfCircleOffset < 0) halfCircleOffset += NUM_LEDS;
+
+  uint8_t oppositeHue = hue + 128;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    int pos = (int)(i + halfCircleOffset) % NUM_LEDS;
+    leds[i] = (pos < NUM_LEDS / 2) ? CHSV(hue, sat, val) : CHSV(oppositeHue, sat, val);
+  }
+}
+
+// ---------- COLOR WIPE ----------
+void colorWipe() {
+  unsigned long wipeInterval = 1 + (unsigned long)((1.0f - speed / 255.0f) * 80.0f);
+
+  unsigned long now = millis();
+  if (now - previousMillisWipe >= wipeInterval) {
+    previousMillisWipe = now;
+
+    uint8_t oppositeHue = hue + 128;
+    leds[wipePos] = wipeReverse ? CHSV(oppositeHue, sat, val) : CHSV(hue, sat, val);
+
+    wipePos++;
+    if (wipePos >= NUM_LEDS) {
+      wipePos = 0;
+      wipeReverse = !wipeReverse;
+    }
+  }
+}
+
+// ---------- PALETTE ROTATE ----------
+void paletteRotate() {
+  float rotationSpeed = ((speed - 128) / 128.0f) * 0.4f;
+  paletteOffset += rotationSpeed;
+  if (paletteOffset >= NUM_LEDS) paletteOffset -= NUM_LEDS;
+  if (paletteOffset < 0) paletteOffset += NUM_LEDS;
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    int pos = (int)(i + paletteOffset) % NUM_LEDS;
+    uint8_t blendedHue = hue + (uint8_t)((pos / (float)NUM_LEDS) * 128);
+    leds[i] = CHSV(blendedHue, sat, val);
+  }
+}
+
+// ---------- CANDLE FLAME ----------
+void candle() {
+  uint8_t noiseSpeed = map(speed, 0, 255, 3, 15);
+  candleZ += noiseSpeed;
+  uint8_t minBri = val - map(fadeout, 0, 255, 0, val);  // fadeout controls flicker depth
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t n = inoise8(i * 15, candleZ);
+    uint8_t brightness = map(n, 0, 255, minBri, val);
+    leds[i] = CHSV(hue, sat, brightness);
+  }
+}
+
+// ---------- SUNRISE / SUNSET ----------
+void sunrise() {
+  float step = 0.00005f + (speed / 255.0f) * 0.0005f;
+  sunriseProgress += step;
+  if (sunriseProgress > 1.0f) sunriseProgress = 0.0f;
+
+  // Hue shifts from deep red (0) toward warm yellow (30), brightness builds
+  uint8_t h = (uint8_t)(sunriseProgress * 30);
+  uint8_t v = (uint8_t)(sunriseProgress * val);
+  fill_solid(leds, NUM_LEDS, CHSV(h, sat, v));
+}
+
+
+// ---------- BREATHING ----------
+void breathing() {
+  float breathSpeed = 0.005f + (speed / 255.0f) * 0.03f;
+  breathPhase += breathSpeed;
+  uint8_t brightness = (uint8_t)((sin(breathPhase) * 0.5f + 0.5f) * val);
+  fill_solid(leds, NUM_LEDS, CHSV(hue, sat, brightness));
+}
+
+// ---------- OCEAN WAVE ----------
+void oceanWave() {
+  float waveSpeed = 0.01f + (speed / 255.0f) * 0.1f;
+  wavePhase += waveSpeed;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    float angle = (i / (float)NUM_LEDS) * TWO_PI * 2;
+    uint8_t brightness = (uint8_t)((sin(angle + wavePhase) * 0.5f + 0.5f) * val);
+    leds[i] = CHSV(hue, sat, brightness);
+  }
+}
+
+// ---------- NORTHERN LIGHTS ----------
+void northernLights() {
+  uint8_t noiseSpeed = map(speed, 0, 255, 1, 4);
+  northernZ += noiseSpeed;
+  northernHueShift += 0.1f;
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t n = inoise8(i * 20, northernZ);
+    uint8_t h = hue + (uint8_t)(sin(i * 0.3f + northernHueShift) * 20);
+    uint8_t v = map(n, 0, 255, 0, val);
+    leds[i] = CHSV(h, sat, v);
+  }
+}
+
+// ---------- TV AMBIENT ----------
+void tvAmbient() {
+  unsigned long interval = map(speed, 0, 255, 800, 80);
+  unsigned long now = millis();
+  // Init on first run
+  if (previousMillisTv == 0) {
+    for (int i = 0; i < NUM_LEDS; i++) { tvHue[i] = hue; tvBri[i] = val; }
+  }
+  if (now - previousMillisTv >= interval) {
+    previousMillisTv = now;
+    // Pick a random section and shift its hue/brightness
+    int start = random8(NUM_LEDS);
+    int len   = random8(4, 12);
+    uint8_t newHue = hue + random8(60) - 30;
+    uint8_t newBri = val - random8(60);
+    for (int i = 0; i < len; i++) {
+      int idx = (start + i) % NUM_LEDS;
+      tvHue[idx] = newHue;
+      tvBri[idx] = newBri;
+    }
+  }
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = CHSV(tvHue[i], sat, tvBri[i]);
+  }
+}
+
+
 void displayLeds() {
   if (!power) {
     FastLED.clear();
@@ -447,6 +626,9 @@ void displayLeds() {
     case 3:
       noiseFlowHue();
       break;
+    case 4:
+      halfCircle();
+      break;
     case 5:
       wave1();
       break;
@@ -460,8 +642,32 @@ void displayLeds() {
       wave4();
       break;
     case 9:
-    default:
       moveADot();
+      break;
+    case 10:
+      colorWipe();
+      break;
+    case 11:
+      paletteRotate();
+      break;
+    case 12:
+      candle();
+      break;
+    case 13:
+      sunrise();
+      break;
+    case 14:
+      breathing();
+      break;
+    case 15:
+      oceanWave();
+      break;
+    case 16:
+      northernLights();
+      break;
+    case 17:
+    default:
+      tvAmbient();
       break;
   }
 }

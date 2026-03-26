@@ -1,5 +1,5 @@
 /*
- * painting - ESP-NOW LED Painting Fixture
+ * Painting - ESP-NOW LED Painting Fixture
  * Jonas Vorwerk 2026
  *
  * ESP8266 + APA102 (COLS x ROWS matrix)
@@ -8,13 +8,13 @@
  *
  * Modes (set via remote):
  *   0 - Solid color
- *   1 - Confetti
- *   2 - Noise flow (2D Perlin noise, fixed hue)
- *   3 - Noise flow with slowly drifting hue  ← default
- *   4 - Weirdo (autonomous random color/effect changes)
+ *   1 - Confetti           (speed = spawn rate, fadeout = fade depth)
+ *   2 - Noise flow         (2D Perlin noise, fixed hue)
+ *   3 - Noise flow hue     (2D Perlin noise, drifting hue)  ← default
+ *   4 - Weirdo             (autonomous random color/effect changes)
  *   5 - Wave 1: sine scanner (beatsin8 dot per column)
  *   6 - Wave 2: sawtooth scanner (beat8 dot per row)
- *   7 - Wave 3: individual oscillation (each LED its own frequency)
+ *   7 - Wave 3: individual oscillation
  *   8 - Wave 4: row pulse (each row breathes at its own rate)
  */
 
@@ -35,6 +35,7 @@
 // #define COLS               7
 
 #define DEVICE_NAME        "Painting"
+#define MAX_MODE           8
 
 //Painting test Jonas
 #define ROWS               15
@@ -124,6 +125,7 @@ typedef struct struct_message {
   bool requestState;   // If true: reply with current state, don't apply changes
   bool isDiscovery;    // If true: discovery broadcast — reply with device name
   char deviceName[16]; // Device name sent in discovery reply
+  int  maxMode;        // Max mode index, sent by lamp during discovery
   bool requestPresets; // If true: reply with preset list
 } struct_message;
 
@@ -138,6 +140,7 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingDataBytes, uint8_t len) {
     struct_message response = {};
     response.isDiscovery = true;
     strncpy(response.deviceName, DEVICE_NAME, sizeof(response.deviceName) - 1);
+    response.maxMode = MAX_MODE;
     esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
     esp_now_send(mac, (uint8_t*)&response, sizeof(response));
     Serial.println("Discovery request received — sending name back to remote");
@@ -334,16 +337,18 @@ void solidColor() {
 // Spawning is rate-limited: speed maps to interval (slow: 150ms, fast: 16ms).
 // One pixel per spawn for a fluid, even stream rather than bursts.
 void confetti() {
-  uint8_t fadeAmount = map(fadeout, 0, 255, 2, 50);
-  fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+  if (fadeout > 0) {
+    uint8_t fadeAmount = map(fadeout, 0, 255, 2, 30);
+    fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+  }
 
   unsigned long now           = millis();
-  unsigned long spawnInterval = map(speed, 0, 255, 150, 16);
+  unsigned long spawnInterval = map(speed, 0, 255, 600, 16);
 
   if (now - previousMillisConfetti >= spawnInterval) {
     previousMillisConfetti = now;
     int pos = random16(NUM_LEDS);
-    leds[pos] += CHSV(hue + random8(64), sat, val);
+    leds[pos] += CHSV(hue, sat, val);
   }
 }
 
@@ -453,7 +458,7 @@ void weirdo() {
 // ==========================================================
 
 uint8_t getBpm() {
-  return map(speed, 0, 255, 5, 60);
+  return map(speed, 0, 255, 3, 60);
 }
 
 // Wave 1: for each column, a dot at beatsin8 row position — forms a sine wave.

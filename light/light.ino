@@ -1,3 +1,16 @@
+/*
+ * Light - ESP-NOW LED Light Fixture
+ * Jonas Vorwerk 2026
+ *
+ * ESP8266 + WS2812 (180 LEDs)
+ * Receives commands from M5Stack remote via ESP-NOW
+ *
+ * Modes (set via remote):
+ *   0 - Solid color
+ *   1 - Confetti           (speed = spawn rate, fadeout = fade depth)
+ *   2 - Shooting star
+ */
+
 #include <ESP8266WiFi.h>
 #include <espnow.h>
 #include "FastLED.h"
@@ -8,11 +21,12 @@
 #define EEPROM_ADDR_DATA  1
 
 #define DEVICE_NAME "Light"
+#define MAX_MODE    2
 
 
 #define NUM_LEDS    180
 #define BRIGHTNESS  128
-#define FRAMES_PER_SECOND  30
+#define FRAMES_PER_SECOND  60
 
 CRGB leds[NUM_LEDS];
 
@@ -41,6 +55,9 @@ typedef struct struct_message {
   uint8_t speed;
   uint8_t fadeout;
   bool requestState;  // If true: reply with current state, don't apply changes
+  bool isDiscovery;   // If true: discovery broadcast — reply with device name
+  char deviceName[16];// Device name sent in discovery reply
+  int  maxMode;       // Max mode index, sent by lamp during discovery
 } struct_message;
 
 struct_message incomingData;
@@ -48,6 +65,17 @@ struct_message incomingData;
 // ---------- ESP-NOW CALLBACK ----------
 void onDataRecv(uint8_t * mac, uint8_t *incomingDataBytes, uint8_t len) {
   memcpy(&incomingData, incomingDataBytes, sizeof(incomingData));
+
+  // If the remote is doing a discovery broadcast, reply with our name and maxMode
+  if (incomingData.isDiscovery) {
+    struct_message response = {};
+    response.isDiscovery = true;
+    strncpy(response.deviceName, DEVICE_NAME, sizeof(response.deviceName) - 1);
+    response.maxMode = MAX_MODE;
+    esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
+    esp_now_send(mac, (uint8_t*)&response, sizeof(response));
+    return;
+  }
 
   // If the remote is requesting our state, send it back and return
   if (incomingData.requestState) {
@@ -197,8 +225,10 @@ void loop() {
 void confetti() {
   // Random colored speckles that fade smoothly
   // Fadeout controls fade rate directly (0=no fade, 255=instant fade)
-  uint8_t fadeAmount = map(fadeout, 0, 255, 2, 50);  // Map to reasonable fade range
-  fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+  if (fadeout > 0) {
+    uint8_t fadeAmount = map(fadeout, 0, 255, 2, 30);
+    fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+  }
   
   // Speed controls spawn rate (how many sparkles per frame)
   int spawnCount = map(speed, 0, 255, 1, 5);  // 1 to 5 sparkles per frame
@@ -229,8 +259,10 @@ void shootingStar() {
   }
   
   // Fade all LEDs (create trailing effect)
-  uint8_t fadeAmount = map(fadeout, 0, 255, 2, 50);
-  fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+  if (fadeout > 0) {
+    uint8_t fadeAmount = map(fadeout, 0, 255, 2, 30);
+    fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
+  }
   
   // Check if it's time to change direction and reset
   unsigned long now = millis();
