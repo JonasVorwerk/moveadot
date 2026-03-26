@@ -18,13 +18,6 @@
 // Maximum number of discoverable lights (runtime count stored in numLights)
 #define MAX_LIGHTS 8
 
-// Known device name → maxMode mapping.
-// Used to set the correct mode ceiling when a light announces itself during discovery.
-static const struct { const char* name; int maxMode; } knownDevices[] = {
-  { "Circle",   9 },
-  { "Painting", 8 },
-};
-static const int NUM_KNOWN_DEVICES = (int)(sizeof(knownDevices) / sizeof(knownDevices[0]));
 
 // Broadcast MAC for ESP-NOW discovery
 static const uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -193,6 +186,7 @@ typedef struct struct_message {
   bool requestState;    // If true: light should reply with its state, not apply changes
   bool isDiscovery;     // If true: discovery broadcast — light should reply with its name
   char deviceName[16];  // Device name (sent in discovery reply)
+  int  maxMode;         // Max mode index, sent by lamp during discovery
   bool requestPresets;  // If true: light should reply with its preset list
 } struct_message;
 
@@ -209,7 +203,6 @@ bool lightStateReceived[MAX_LIGHTS];
 
 // ---------- FUNCTION DECLARATIONS ----------
 void setupESPNow();
-int  getMaxModeForName(const char* name);
 void requestLightStates();
 void requestLampPresets(int lightIdx);
 void sendColorData();
@@ -335,7 +328,7 @@ void setup() {
   struct_message disc = {};
   disc.isDiscovery = true;
   esp_now_send(BROADCAST_MAC, (uint8_t*)&disc, sizeof(disc));
-  unsigned long discoveryDeadline = millis() + 2000;
+  unsigned long discoveryDeadline = millis() + 500;
   Serial.println("Discovery broadcast sent");
 
   // Show loading animation (~1.1 s). ESP-NOW callbacks run in a
@@ -502,7 +495,7 @@ void OnDataRecvFromLight(const esp_now_recv_info_t *recv_info, const uint8_t *da
     memcpy(lightMacAddresses[idx], mac, 6);
     strncpy(lightNames[idx], msg->deviceName, 15);
     lightNames[idx][15] = '\0';
-    lightMaxMode[idx] = getMaxModeForName(msg->deviceName);
+    lightMaxMode[idx] = msg->maxMode;
 
     // Register this light as an ESP-NOW peer so we can send to it
     esp_now_peer_info_t newPeer = {};
@@ -562,13 +555,6 @@ void setupESPNow() {
   }
 }
 
-// ---------- DEVICE NAME → MAXMODE LOOKUP ----------
-int getMaxModeForName(const char* name) {
-  for (int i = 0; i < NUM_KNOWN_DEVICES; i++) {
-    if (strcmp(name, knownDevices[i].name) == 0) return knownDevices[i].maxMode;
-  }
-  return 8;  // Safe default for unknown devices
-}
 
 // ---------- REQUEST LIGHT STATES ----------
 // Sends a state-request ping to each discovered light and waits up to 2s for responses.
@@ -588,8 +574,8 @@ void requestLightStates() {
                   result == ESP_OK ? "OK" : "FAIL");
   }
 
-  // Wait up to 2 seconds for all lights to respond
-  unsigned long deadline = millis() + 2000;
+  // Wait up to 500ms for all lights to respond
+  unsigned long deadline = millis() + 500;
   while (millis() < deadline) {
     bool allDone = true;
     for (int i = 0; i < numLights; i++) {
@@ -597,28 +583,6 @@ void requestLightStates() {
     }
     if (allDone) break;
     delay(20);
-  }
-
-  // Retry once for any lights that didn't reply on the first attempt
-  bool anyMissed = false;
-  for (int i = 0; i < numLights; i++) {
-    if (!lightStateReceived[i]) {
-      anyMissed = true;
-      esp_err_t result = esp_now_send(lightMacAddresses[i], (uint8_t*)&req, sizeof(req));
-      Serial.printf("Retry state request to Light %d (%s): %s\n", i + 1, lightNames[i],
-                    result == ESP_OK ? "OK" : "FAIL");
-    }
-  }
-  if (anyMissed) {
-    deadline = millis() + 2000;
-    while (millis() < deadline) {
-      bool allDone = true;
-      for (int i = 0; i < numLights; i++) {
-        if (!lightStateReceived[i]) { allDone = false; break; }
-      }
-      if (allDone) break;
-      delay(20);
-    }
   }
 
   // Log final results
@@ -977,11 +941,12 @@ void switchToLight(uint8_t lightIndex) {
 void drawLightSelectPage() {
   if (numLights == 0) {
     // No lights found — show message only
-    M5.Display.setFont(&fonts::Font4);
+    M5.Display.setFont(&UI_FONT);
+    M5.Display.setTextSize(1);
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.drawString("NO DEVICES", 160, 100);
-    M5.Display.drawString("FOUND", 160, 140);
+    M5.Display.drawString("FOUND", 160, 120);
     return;
   }
 
@@ -1757,7 +1722,7 @@ void showLoadingScreen() {
   // Animate line growing from left to right
   int maxWidth = 320 - (2 * margin);  // Screen width minus margins (280px)
   int startX = margin;  // Start at left margin
-  int steps = 30;  // Number of animation steps
+  int steps = 20;  // Number of animation steps
 
   for (int i = 0; i <= steps; i++) {
     int currentWidth = map(i, 0, steps, 0, maxWidth);
@@ -1765,11 +1730,11 @@ void showLoadingScreen() {
     // Draw the growing line from left to right
     M5.Display.fillRect(startX, centerY - lineHeight/2, currentWidth, lineHeight, TFT_WHITE);
 
-    delay(30);  // Animation speed (adjust for faster/slower)
+    delay(15);  // Animation speed
   }
 
   // Keep full line visible briefly before continuing
-  delay(200);
+  delay(100);
 
 }
 
