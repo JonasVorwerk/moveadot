@@ -193,7 +193,7 @@ typedef struct struct_message {
 } struct_message;
 
 // ---------- MODE NAMES PACKET ----------
-#define MAX_MODE_NAME_LEN  14
+#define MAX_MODE_NAME_LEN  16
 #define MAX_MODES_PACKET   16  // Fixed packet size — must match fixtures
 typedef struct {
   bool    isModeNamesPacket;
@@ -928,12 +928,13 @@ void syncCwFromColor() {
 void drawBatteryIndicator() {
   // Get battery voltage and percentage
   int batteryLevel = M5.Power.getBatteryLevel(); // Returns 0-100
-  bool isCharging = M5.Power.isCharging();       // Check if charging
-  
+  bool isCharging = M5.Power.isCharging();
+  bool isUsbConnected = isCharging || (!isCore2 && M5.Power.Axp2101.isVBUS());
+
   // Determine color based on battery and power state
   uint16_t batteryColor;
-  if (isCharging) {
-    // Blue when USB connected / charging
+  if (isUsbConnected) {
+    // Blue when USB connected (charging or full on USB)
     batteryColor = M5.Display.color565(0, 150, 255);
   } else if (batteryLevel > 60) {
     // Green (full)
@@ -1642,7 +1643,8 @@ void checkSleep() {
   }
 
   // Auto power off after 2 minutes of inactivity (only when not charging)
-  if (timeSinceTouch >= POWER_OFF_TIMEOUT && !M5.Power.isCharging() && M5.Power.getBatteryLevel() < 100) {
+  bool usbPresent = M5.Power.isCharging() || (!isCore2 && M5.Power.Axp2101.isVBUS());
+  if (timeSinceTouch >= POWER_OFF_TIMEOUT && !usbPresent) {
     Serial.println("Auto power off — no activity and not charging");
     showShutdownAnimation();
   }

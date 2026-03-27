@@ -162,7 +162,7 @@ static const LampPreset lampPresets[MAX_PRESETS] = {
 #endif
 
 // ---------- MODE NAMES PACKET ----------
-#define MAX_MODE_NAME_LEN  14
+#define MAX_MODE_NAME_LEN  16
 #define MAX_MODES_PACKET   16  // Fixed size — must match remote
 typedef struct {
   bool    isModeNamesPacket;
