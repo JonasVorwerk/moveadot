@@ -1603,6 +1603,7 @@ void handleTouch() {
         int totalWidth = (squareSize * 3) + (BUTTON_SPACING * 2);
         int startX     = (320 - totalWidth) / 2;
         int leftX      = startX;
+        int midX       = startX + squareSize + BUTTON_SPACING;
         int rightX     = startX + (squareSize + BUTTON_SPACING) * 2;
         int btnY       = (240 - squareSize) / 2;
 
