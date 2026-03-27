@@ -482,30 +482,6 @@ void loop() {
 void OnDataRecvFromLight(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
   const uint8_t *mac = recv_info->src_addr;
 
-  // ── Single mode name packet ─────────────────────────────────────────────
-  Serial.printf("[RECV] len=%d sizeof(mode_name_packet)=%d\n", len, (int)sizeof(mode_name_packet));
-  if (len >= (int)sizeof(mode_name_packet)) {
-    const mode_name_packet *mn = (mode_name_packet*)data;
-    Serial.printf("[RECV] isModeNamePacket=%d modeIndex=%d\n", mn->isModeNamePacket, mn->modeIndex);
-    if (mn->isModeNamePacket) {
-      for (int i = 0; i < numLights; i++) {
-        if (memcmp(mac, lightMacAddresses[i], 6) == 0) {
-          if (mn->modeIndex < MAX_MODES_REMOTE) {
-            strncpy(lightModeNames[i][mn->modeIndex], mn->name, MAX_MODE_NAME_LEN - 1);
-            lightModeNames[i][mn->modeIndex][MAX_MODE_NAME_LEN - 1] = '\0';
-            lightModeNamesReceived[i]++;
-            if (lightModeNamesReceived[i] >= mn->totalModes) {
-              lightModeNamesLoaded[i] = true;
-              Serial.printf("All mode names received from Light %d (%s)\n", i + 1, lightNames[i]);
-            }
-          }
-          break;
-        }
-      }
-      return;
-    }
-  }
-
   // ── Preset packet: lamp sends its preset list ──────────────────────────
   if (len == (int)sizeof(preset_packet)) {
     const preset_packet *pp = (preset_packet*)data;
@@ -517,6 +493,26 @@ void OnDataRecvFromLight(const esp_now_recv_info_t *recv_info, const uint8_t *da
           for (int j = 0; j < cnt; j++) lightPresets[i][j] = pp->slots[j];
           lightPresetsLoaded[i] = true;
           Serial.printf("Presets received from Light %d (%s): %d presets\n", i + 1, lightNames[i], cnt);
+          break;
+        }
+      }
+      return;
+    }
+  }
+
+  // ── Single mode name packet ─────────────────────────────────────────────
+  if (len == (int)sizeof(mode_name_packet)) {
+    const mode_name_packet *mn = (mode_name_packet*)data;
+    if (mn->isModeNamePacket && mn->modeIndex < MAX_MODES_REMOTE) {
+      for (int i = 0; i < numLights; i++) {
+        if (memcmp(mac, lightMacAddresses[i], 6) == 0) {
+          strncpy(lightModeNames[i][mn->modeIndex], mn->name, MAX_MODE_NAME_LEN - 1);
+          lightModeNames[i][mn->modeIndex][MAX_MODE_NAME_LEN - 1] = '\0';
+          lightModeNamesReceived[i]++;
+          if (lightModeNamesReceived[i] >= mn->totalModes) {
+            lightModeNamesLoaded[i] = true;
+            Serial.printf("All mode names received from Light %d (%s)\n", i + 1, lightNames[i]);
+          }
           break;
         }
       }
