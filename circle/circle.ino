@@ -163,7 +163,7 @@ static const LampPreset lampPresets[MAX_PRESETS] = {
 
 // ---------- MODE NAMES PACKET ----------
 #define MAX_MODE_NAME_LEN  16
-#define MAX_MODES_PACKET   16  // Fixed size — must match remote
+#define MAX_MODES_PACKET   15  // Fixed size — must match remote (max 250 bytes ESP-NOW)
 typedef struct {
   bool    isModeNamesPacket;
   uint8_t count;

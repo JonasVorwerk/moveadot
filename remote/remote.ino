@@ -194,7 +194,7 @@ typedef struct struct_message {
 
 // ---------- MODE NAMES PACKET ----------
 #define MAX_MODE_NAME_LEN  16
-#define MAX_MODES_PACKET   16  // Fixed packet size — must match fixtures
+#define MAX_MODES_PACKET   15  // Fixed packet size — must match fixtures (max 250 bytes ESP-NOW)
 typedef struct {
   bool    isModeNamesPacket;
   uint8_t count;
