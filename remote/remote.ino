@@ -1612,6 +1612,7 @@ void handleTouch() {
           if (currentMode != oldMode) {
             lightMode[currentLight] = currentMode;
             sendColorData();
+            playClick();
             drawModePage();
           }
         }
