@@ -483,8 +483,10 @@ void OnDataRecvFromLight(const esp_now_recv_info_t *recv_info, const uint8_t *da
   const uint8_t *mac = recv_info->src_addr;
 
   // ── Single mode name packet ─────────────────────────────────────────────
-  if (len == (int)sizeof(mode_name_packet)) {
+  Serial.printf("[RECV] len=%d sizeof(mode_name_packet)=%d\n", len, (int)sizeof(mode_name_packet));
+  if (len >= (int)sizeof(mode_name_packet)) {
     const mode_name_packet *mn = (mode_name_packet*)data;
+    Serial.printf("[RECV] isModeNamePacket=%d modeIndex=%d\n", mn->isModeNamePacket, mn->modeIndex);
     if (mn->isModeNamePacket) {
       for (int i = 0; i < numLights; i++) {
         if (memcmp(mac, lightMacAddresses[i], 6) == 0) {
