@@ -35,7 +35,7 @@ uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 #define LIGHT_BAR_GAP 3  // Gap between light bar and content below
 
 // Page system - new flow
-#define NUM_PAGES 7
+#define NUM_PAGES 8
 #define PAGE_LOADING        0
 #define PAGE_LIGHT_SELECT   1
 #define PAGE_LIGHT_MAIN     2
@@ -43,7 +43,8 @@ uint8_t lightMacAddresses[MAX_LIGHTS][6];  // Filled at runtime during discovery
 #define PAGE_HSV            4
 #define PAGE_COLOR_SELECTOR 5
 #define PAGE_SETTINGS       6
-#define IS_SETTINGS_PAGE(p) ((p) >= PAGE_PRESETS && (p) <= PAGE_SETTINGS)
+#define PAGE_MODE           7
+#define IS_SETTINGS_PAGE(p) ((p) >= PAGE_PRESETS && (p) <= PAGE_MODE)
 
 // Auto-return timeout
 #define AUTO_RETURN_TIMEOUT 5000  // 3 seconds
@@ -158,7 +159,7 @@ bool lastChargingState = false;
 // Page navigation history for auto-return
 uint8_t previousPage = PAGE_LIGHT_SELECT;
 uint8_t lastSettingsPage = PAGE_SETTINGS;  // Last visited settings sub-page
-const char* settingsPageNames[] = { "Presets", "HSV", "Color", "Settings" };
+const char* settingsPageNames[] = { "Presets", "HSV", "Color", "Settings", "Mode" };
 bool ignoreFirstTouch = false;  // Ignore first touch after page navigation
 
 // Single debounce variable and time for ALL buttons, sliders, interactions
@@ -183,12 +184,26 @@ typedef struct struct_message {
   int mode;
   uint8_t speed;        // Animation speed (0-255)
   uint8_t fadeout;      // Fadeout rate (0-255)
-  bool requestState;    // If true: light should reply with its state, not apply changes
-  bool isDiscovery;     // If true: discovery broadcast — light should reply with its name
-  char deviceName[16];  // Device name (sent in discovery reply)
-  int  maxMode;         // Max mode index, sent by lamp during discovery
-  bool requestPresets;  // If true: light should reply with its preset list
+  bool requestState;      // If true: light should reply with its state, not apply changes
+  bool isDiscovery;       // If true: discovery broadcast — light should reply with its name
+  char deviceName[16];    // Device name (sent in discovery reply)
+  int  maxMode;           // Max mode index, sent by lamp during discovery
+  bool requestPresets;    // If true: light should reply with its preset list
+  bool requestModeNames;  // If true: light should reply with mode names list
 } struct_message;
+
+// ---------- MODE NAMES PACKET ----------
+#define MAX_MODE_NAME_LEN  14
+#define MAX_MODES_PACKET   16  // Fixed packet size — must match fixtures
+typedef struct {
+  bool    isModeNamesPacket;
+  uint8_t count;
+  char    names[MAX_MODES_PACKET][MAX_MODE_NAME_LEN];
+} mode_names_packet;
+
+// Per-light mode name storage
+char  lightModeNames[MAX_LIGHTS][MAX_MODES_PACKET][MAX_MODE_NAME_LEN];
+bool  lightModeNamesLoaded[MAX_LIGHTS];
 
 struct_message outgoingData;
 
@@ -205,6 +220,7 @@ bool lightStateReceived[MAX_LIGHTS];
 void setupESPNow();
 void requestLightStates();
 void requestLampPresets(int lightIdx);
+void requestLampModeNames(int lightIdx);
 void sendColorData();
 void buildColorWheel();
 void drawColorWheelCanvas();
@@ -220,6 +236,7 @@ void drawLightMainPage();
 void drawColorSelectorPage();
 void drawSettingsPage();
 void drawHSVPage();
+void drawModePage();
 void drawVerticalSlider(int x, int centerY, int width, int height, int value, int minVal, int maxVal);
 void drawSliderLabel(int x, int centerY, int width, int height, const char* label);
 void drawModeButtons(int x, int centerY, int width, int height, int value);
@@ -339,9 +356,10 @@ void setup() {
   while (millis() < discoveryDeadline) delay(20);
   Serial.printf("Discovery complete: %d device(s) found\n", numLights);
 
-  // Read current state from discovered lights
+  // Read current state and mode names from discovered lights
   if (numLights > 0) {
     requestLightStates();
+    for (int i = 0; i < numLights; i++) requestLampModeNames(i);
   }
 
   // Create color wheel sprites (320 × WHEEL_HEIGHT = 320 × 176 px)
@@ -460,6 +478,26 @@ void loop() {
 // Called for both discovery replies and state responses from lights.
 void OnDataRecvFromLight(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
   const uint8_t *mac = recv_info->src_addr;
+
+  // ── Mode names packet ──────────────────────────────────────────────────
+  if (len == (int)sizeof(mode_names_packet)) {
+    const mode_names_packet *mn = (mode_names_packet*)data;
+    if (mn->isModeNamesPacket) {
+      for (int i = 0; i < numLights; i++) {
+        if (memcmp(mac, lightMacAddresses[i], 6) == 0) {
+          uint8_t cnt = (mn->count < MAX_MODES_PACKET) ? mn->count : MAX_MODES_PACKET;
+          for (int j = 0; j < cnt; j++) {
+            strncpy(lightModeNames[i][j], mn->names[j], MAX_MODE_NAME_LEN - 1);
+            lightModeNames[i][j][MAX_MODE_NAME_LEN - 1] = '\0';
+          }
+          lightModeNamesLoaded[i] = true;
+          Serial.printf("Mode names received from Light %d (%s)\n", i + 1, lightNames[i]);
+          break;
+        }
+      }
+      return;
+    }
+  }
 
   // ── Preset packet: lamp sends its preset list ──────────────────────────
   if (len == (int)sizeof(preset_packet)) {
@@ -630,6 +668,29 @@ void requestLampPresets(int idx) {
   }
 }
 
+// ---------- REQUEST MODE NAMES ----------
+void requestLampModeNames(int idx) {
+  if (idx < 0 || idx >= numLights) return;
+  Serial.printf("Requesting mode names from Light %d (%s)...\n", idx + 1, lightNames[idx]);
+
+  struct_message req = {};
+  req.requestModeNames = true;
+  esp_err_t result = esp_now_send(lightMacAddresses[idx], (uint8_t*)&req, sizeof(req));
+  if (result != ESP_OK) {
+    Serial.printf("Mode names request send failed for Light %d\n", idx + 1);
+    return;
+  }
+
+  unsigned long deadline = millis() + 1000;
+  while (millis() < deadline && !lightModeNamesLoaded[idx]) delay(20);
+
+  if (lightModeNamesLoaded[idx]) {
+    Serial.printf("Mode names loaded for Light %d\n", idx + 1);
+  } else {
+    Serial.printf("Mode names timeout for Light %d\n", idx + 1);
+  }
+}
+
 // ---------- SEND COLOR DATA ----------
 void sendColorData() {
   // Always flush current light's state into arrays before saving
@@ -745,11 +806,11 @@ void drawSettingsNav() {
 void handleSettingsNavTap(int tx, int ty) {
   if (tx < SNAV_BTN_W) {
     // Left — previous, wrap around
-    uint8_t next = (currentPage <= PAGE_PRESETS) ? PAGE_SETTINGS : currentPage - 1;
+    uint8_t next = (currentPage <= PAGE_PRESETS) ? PAGE_MODE : currentPage - 1;
     navigateToPage(next, true);
   } else if (tx >= 320 - SNAV_BTN_W) {
     // Right — next, wrap around
-    uint8_t next = (currentPage >= PAGE_SETTINGS) ? PAGE_PRESETS : currentPage + 1;
+    uint8_t next = (currentPage >= PAGE_MODE) ? PAGE_PRESETS : currentPage + 1;
     navigateToPage(next, true);
   }
 }
@@ -765,6 +826,7 @@ void drawUI() {
     case PAGE_HSV:            drawHSVPage();            break;
     case PAGE_COLOR_SELECTOR: drawColorSelectorPage();  break;
     case PAGE_SETTINGS:       drawSettingsPage();       break;
+    case PAGE_MODE:           drawModePage();           break;
   }
 
   if (currentPage != PAGE_LOADING) {
@@ -871,7 +933,7 @@ void drawBatteryIndicator() {
   // Determine color based on battery and power state
   uint16_t batteryColor;
   if (isCharging) {
-    // Blue when charging
+    // Blue when USB connected / charging
     batteryColor = M5.Display.color565(0, 150, 255);
   } else if (batteryLevel > 60) {
     // Green (full)
@@ -1053,11 +1115,9 @@ void drawColorSelectorPage() {
 
 // ---------- DRAW HSV PAGE ----------
 void drawHSVPage() {
-  int sliderWidth  = 60;
+  int sliderWidth  = 80;
   int sliderHeight = 150;
-  int spacing      = 10;
-  int totalWidth   = (sliderWidth * 3) + (spacing * 2);
-  int startX       = (320 - totalWidth) / 2;
+  int startX       = (320 - (sliderWidth * 3 + BUTTON_SPACING * 2)) / 2;
   int centerY      = (WHEEL_Y + SNAV_Y) / 2 - 15;
 
   // Hue (0-255)
@@ -1065,44 +1125,77 @@ void drawHSVPage() {
   drawSliderLabel(startX, centerY, sliderWidth, sliderHeight, "Hue");
 
   // Saturation (0-255)
-  drawVerticalSlider(startX + (sliderWidth + spacing), centerY, sliderWidth, sliderHeight, currentSat, 0, 255);
-  drawSliderLabel(startX + (sliderWidth + spacing), centerY, sliderWidth, sliderHeight, "Sat");
+  drawVerticalSlider(startX + (sliderWidth + BUTTON_SPACING), centerY, sliderWidth, sliderHeight, currentSat, 0, 255);
+  drawSliderLabel(startX + (sliderWidth + BUTTON_SPACING), centerY, sliderWidth, sliderHeight, "Sat");
 
   // Brightness (0-255)
-  drawVerticalSlider(startX + (sliderWidth + spacing) * 2, centerY, sliderWidth, sliderHeight, currentVal, 0, 255);
-  drawSliderLabel(startX + (sliderWidth + spacing) * 2, centerY, sliderWidth, sliderHeight, "Bright");
+  drawVerticalSlider(startX + (sliderWidth + BUTTON_SPACING) * 2, centerY, sliderWidth, sliderHeight, currentVal, 0, 255);
+  drawSliderLabel(startX + (sliderWidth + BUTTON_SPACING) * 2, centerY, sliderWidth, sliderHeight, "Bright");
+}
+
+// ---------- DRAW MODE PAGE ----------
+void drawModePage() {
+  int squareSize = 80;
+  int totalWidth = (squareSize * 3) + (BUTTON_SPACING * 2);
+  int startX     = (320 - totalWidth) / 2;
+  int y          = (240 - squareSize) / 2;
+  int leftX      = startX;
+  int midX       = startX + squareSize + BUTTON_SPACING;
+  int rightX     = startX + (squareSize + BUTTON_SPACING) * 2;
+
+  // Clear content area
+  M5.Display.fillRect(0, WHEEL_Y, 320, SNAV_Y - WHEEL_Y, TFT_BLACK);
+
+  // Mode name centered above the buttons
+  char modeName[MAX_MODE_NAME_LEN + 1];
+  if (lightModeNamesLoaded[currentLight] && currentMode < MAX_MODES_PACKET) {
+    strncpy(modeName, lightModeNames[currentLight][currentMode], sizeof(modeName) - 1);
+    modeName[sizeof(modeName) - 1] = '\0';
+  } else {
+    sprintf(modeName, "Mode %d", currentMode);
+  }
+  M5.Display.setFont(&fonts::Font4);
+  M5.Display.setTextColor(TFT_WHITE);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString(upper(modeName), 160, y - 31);
+
+  // Prev button — white square
+  M5.Display.fillRect(leftX, y, squareSize, squareSize, TFT_WHITE);
+  M5.Display.setFont(&UI_FONT);
+  M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
+  M5.Display.setTextDatum(top_center);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString("PREV", leftX + squareSize / 2, y + squareSize + 6);
+
+  // Next button — white square
+  M5.Display.fillRect(rightX, y, squareSize, squareSize, TFT_WHITE);
+  M5.Display.setFont(&UI_FONT);
+  M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
+  M5.Display.setTextDatum(top_center);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString("NEXT", rightX + squareSize / 2, y + squareSize + 6);
 }
 
 // ---------- DRAW SETTINGS PAGE ----------
 void drawSettingsPage() {
-  // 3 vertical sliders + 1 mode +/- widget (80px wide, same as squares on other pages)
-
-  int sliderWidth  = 60;
-  int modeWidth    = sliderWidth;  // Same width as sliders
+  // 3 vertical sliders: Brightness, Speed, Fade — aligned with main page buttons
+  int sliderWidth  = 80;
   int sliderHeight = 150;
-  int spacing      = 10;
-  int totalWidth   = (sliderWidth * 4) + (spacing * 3);
-  int startX       = (320 - totalWidth) / 2;
-  int centerY      = (WHEEL_Y + SNAV_Y) / 2 - 15;  // 106 px — centred in content area, shifted up
-  int modeX        = startX + (sliderWidth + spacing) * 3;
+  int startX       = (320 - (sliderWidth * 3 + BUTTON_SPACING * 2)) / 2;
+  int centerY      = (WHEEL_Y + SNAV_Y) / 2 - 15;
 
   // Brightness (0-255)
   drawVerticalSlider(startX, centerY, sliderWidth, sliderHeight, currentVal, 0, 255);
   drawSliderLabel(startX, centerY, sliderWidth, sliderHeight, "Bright");
 
   // Speed (0-255)
-  drawVerticalSlider(startX + (sliderWidth + spacing), centerY, sliderWidth, sliderHeight, currentSpeed, 0, 255);
-  drawSliderLabel(startX + (sliderWidth + spacing), centerY, sliderWidth, sliderHeight, "Speed");
+  drawVerticalSlider(startX + (sliderWidth + BUTTON_SPACING), centerY, sliderWidth, sliderHeight, currentSpeed, 0, 255);
+  drawSliderLabel(startX + (sliderWidth + BUTTON_SPACING), centerY, sliderWidth, sliderHeight, "Speed");
 
   // Fadeout (0-255)
-  drawVerticalSlider(startX + (sliderWidth + spacing) * 2, centerY, sliderWidth, sliderHeight, currentFadeout, 0, 255);
-  drawSliderLabel(startX + (sliderWidth + spacing) * 2, centerY, sliderWidth, sliderHeight, "Fade");
-
-  // Mode (0-7): two 80×80 squares (+/-), number shown as label below
-  drawModeButtons(modeX, centerY, modeWidth, sliderHeight, currentMode);
-  char modeLabel[8];
-  sprintf(modeLabel, "Mode %d", currentMode);
-  drawSliderLabel(modeX, centerY, modeWidth, sliderHeight, modeLabel);
+  drawVerticalSlider(startX + (sliderWidth + BUTTON_SPACING) * 2, centerY, sliderWidth, sliderHeight, currentFadeout, 0, 255);
+  drawSliderLabel(startX + (sliderWidth + BUTTON_SPACING) * 2, centerY, sliderWidth, sliderHeight, "Fade");
 }
 
 // Helper function to draw vertical slider with fill from bottom
@@ -1394,17 +1487,15 @@ void handleTouch() {
 
     case PAGE_HSV:
       {
-        int sliderWidth  = 60;
+        int sliderWidth  = 80;
         int sliderHeight = 150;
-        int spacing      = 10;
-        int totalWidth   = (sliderWidth * 3) + (spacing * 2);
-        int startX       = (320 - totalWidth) / 2;
+        int startX       = (320 - (sliderWidth * 3 + BUTTON_SPACING * 2)) / 2;
         int centerY      = (WHEEL_Y + SNAV_Y) / 2 - 15;
         int sliderY      = centerY - sliderHeight / 2;
 
         int column = -1;
         for (int col = 0; col < 3; col++) {
-          int colX = startX + col * (sliderWidth + spacing);
+          int colX = startX + col * (sliderWidth + BUTTON_SPACING);
           if (touchX >= colX && touchX <= colX + sliderWidth) {
             column = col;
             break;
@@ -1436,7 +1527,7 @@ void handleTouch() {
           if (newValue != oldValue) {
             sliderWasUsed = true;
             sendColorData();
-            int sliderX = startX + column * (sliderWidth + spacing);
+            int sliderX = startX + column * (sliderWidth + BUTTON_SPACING);
             uint8_t drawVal = (column == 0) ? currentHue : (column == 1) ? currentSat : currentVal;
             drawVerticalSlider(sliderX, centerY, sliderWidth, sliderHeight, drawVal, 0, 255);
           }
@@ -1448,92 +1539,74 @@ void handleTouch() {
 
     case PAGE_SETTINGS:
       {
-        // 4 equal-width columns: 3 sliders + 1 mode +/- widget
-        int sliderWidth  = 60;
-        int modeWidth    = sliderWidth;
+        // 3 sliders: Brightness, Speed, Fade
+        int sliderWidth  = 80;
         int sliderHeight = 150;
-        int spacing      = 10;
-        int totalWidth   = (sliderWidth * 4) + (spacing * 3);
-        int startX       = (320 - totalWidth) / 2;
+        int startX       = (320 - (sliderWidth * 3 + BUTTON_SPACING * 2)) / 2;
         int centerY      = (WHEEL_Y + SNAV_Y) / 2 - 15;
-        int sliderY      = centerY - sliderHeight/2;
+        int sliderY      = centerY - sliderHeight / 2;
 
-        // Determine which column is being touched (mode column is wider)
         int column = -1;
-        for (int col = 0; col < 4; col++) {
-          int colX = startX + col * (sliderWidth + spacing);
-          int colW = (col == 3) ? modeWidth : sliderWidth;
-          if (touchX >= colX && touchX <= colX + colW) {
-            column = col;
-            break;
-          }
+        for (int col = 0; col < 3; col++) {
+          int colX = startX + col * (sliderWidth + BUTTON_SPACING);
+          if (touchX >= colX && touchX <= colX + sliderWidth) { column = col; break; }
         }
-        
+
         if (column >= 0) {
-          // Touch is in a valid column - map Y position within slider bounds
           int constrainedY = constrain(touchY, sliderY, sliderY + sliderHeight);
-          float yPercent = 1.0 - ((float)(constrainedY - sliderY) / (float)sliderHeight);
-          yPercent = constrain(yPercent, 0.0, 1.0);
-          
+          float yPercent   = 1.0f - ((float)(constrainedY - sliderY) / (float)sliderHeight);
+          yPercent = constrain(yPercent, 0.0f, 1.0f);
+          int newValue = (int)(yPercent * 255);
           int oldValue = 0;
-          int newValue = 0;
-          
+
           if (column == 0) {
-            // Brightness (0-255)
-            oldValue = currentVal;
-            newValue = (int)(yPercent * 255);
-            currentVal = constrain(newValue, 0, 255);
-            lightVal[currentLight] = currentVal;
+            oldValue = currentVal;    currentVal    = constrain(newValue, 0, 255); lightVal[currentLight]    = currentVal;
           } else if (column == 1) {
-            // Speed (0-255)
-            oldValue = currentSpeed;
-            newValue = (int)(yPercent * 255);
-            currentSpeed = constrain(newValue, 0, 255);
-            lightSpeed[currentLight] = currentSpeed;
+            oldValue = currentSpeed;  currentSpeed  = constrain(newValue, 0, 255); lightSpeed[currentLight]  = currentSpeed;
           } else if (column == 2) {
-            // Fadeout (0-255)
-            oldValue = currentFadeout;
-            newValue = (int)(yPercent * 255);
-            currentFadeout = constrain(newValue, 0, 255);
-            lightFadeout[currentLight] = currentFadeout;
-          } else if (column == 3) {
-            // Mode: top half = +, bottom half = − (no dead zone)
-            oldValue = currentMode;
-            int midY = sliderY + sliderHeight / 2;  // Y=120
-            if (touchY < midY) {
-              newValue = constrain(currentMode + 1, 0, lightMaxMode[currentLight]);
-            } else {
-              newValue = constrain(currentMode - 1, 0, lightMaxMode[currentLight]);
-            }
-            if (newValue != oldValue) lastInteractionTime = now;  // Debounce button tap
-            currentMode = newValue;
-            lightMode[currentLight] = currentMode;
+            oldValue = currentFadeout; currentFadeout = constrain(newValue, 0, 255); lightFadeout[currentLight] = currentFadeout;
           }
-          
-          // Only redraw if value actually changed
+
           if (newValue != oldValue) {
-            sliderWasUsed = true;  // Mark that slider was used
+            sliderWasUsed = true;
             sendColorData();
-            
-            // Redraw only the active slider
-            int sliderX = startX + column * (sliderWidth + spacing);
-            if (column == 0) {
-              drawVerticalSlider(sliderX, centerY, sliderWidth, sliderHeight, currentVal, 0, 255);
-            } else if (column == 1) {
-              drawVerticalSlider(sliderX, centerY, sliderWidth, sliderHeight, currentSpeed, 0, 255);
-            } else if (column == 2) {
-              drawVerticalSlider(sliderX, centerY, sliderWidth, sliderHeight, currentFadeout, 0, 255);
-            } else if (column == 3) {
-              drawModeButtons(sliderX, centerY, modeWidth, sliderHeight, currentMode);
-              // Clear label area before redrawing to prevent text ghosting
-              M5.Display.fillRect(sliderX, centerY + sliderHeight/2 + 8, modeWidth, 14, TFT_BLACK);
-              char modeLabel[8];
-              sprintf(modeLabel, "Mode %d", currentMode);
-              drawSliderLabel(sliderX, centerY, modeWidth, sliderHeight, modeLabel);
-            }
+            int sliderX = startX + column * (sliderWidth + BUTTON_SPACING);
+            uint8_t drawVal = (column == 0) ? currentVal : (column == 1) ? currentSpeed : currentFadeout;
+            drawVerticalSlider(sliderX, centerY, sliderWidth, sliderHeight, drawVal, 0, 255);
           }
         }
-        
+
+        wasTouching = true;
+      }
+      break;
+
+    case PAGE_MODE:
+      {
+        int squareSize = 80;
+        int totalWidth = (squareSize * 3) + (BUTTON_SPACING * 2);
+        int startX     = (320 - totalWidth) / 2;
+        int leftX      = startX;
+        int rightX     = startX + (squareSize + BUTTON_SPACING) * 2;
+        int btnY       = (240 - squareSize) / 2;
+
+        if (!wasTouching) {
+          int oldMode = currentMode;
+
+          if (touchX >= leftX && touchX <= leftX + squareSize &&
+              touchY >= btnY  && touchY <= btnY + squareSize) {
+            currentMode = constrain(currentMode - 1, 0, lightMaxMode[currentLight]);
+          } else if (touchX >= rightX && touchX <= rightX + squareSize &&
+                     touchY >= btnY   && touchY <= btnY + squareSize) {
+            currentMode = constrain(currentMode + 1, 0, lightMaxMode[currentLight]);
+          }
+
+          if (currentMode != oldMode) {
+            lightMode[currentLight] = currentMode;
+            sendColorData();
+            drawModePage();
+          }
+        }
+
         wasTouching = true;
       }
       break;
@@ -1569,7 +1642,7 @@ void checkSleep() {
   }
 
   // Auto power off after 2 minutes of inactivity (only when not charging)
-  if (timeSinceTouch >= POWER_OFF_TIMEOUT && !M5.Power.isCharging()) {
+  if (timeSinceTouch >= POWER_OFF_TIMEOUT && !M5.Power.isCharging() && M5.Power.getBatteryLevel() < 100) {
     Serial.println("Auto power off — no activity and not charging");
     showShutdownAnimation();
   }

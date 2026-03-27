@@ -1,31 +1,37 @@
 /*
- * Circle - ESP-NOW LED Circle Fixture
+ * Circle / NanoCircle - ESP-NOW LED Ring Fixture
  * Jonas Vorwerk 2026
  *
- * ESP8266 + APA102 (300 LED ring)
- * Data: GPIO 14  |  Clock: GPIO 12
- * Receives commands from M5Stack remote via ESP-NOW
+ * Uncomment ONE device below before flashing:
+ *
+ *   DEVICE_NANOCIRCLE  →  ESP8266 + WS2812  (60 LEDs)   Data: GPIO 12
+ *   DEVICE_CIRCLE      →  ESP8266 + APA102  (300 LEDs)  Data: GPIO 14 | Clock: GPIO 12
  *
  * Modes (set via remote):
- *   0  - Solid color
- *   1  - Confetti          (speed = spawn rate, fadeout = fade depth)
- *   2  - Noise flow        (Perlin noise, fixed hue)
- *   3  - Noise flow hue    (Perlin noise, drifting hue)
- *   4  - Half circle       (rotating split, speed = direction & rate)
- *   5  - Wave 1: sine brightness wave
- *   6  - Wave 2: sawtooth scanning dot
- *   7  - Wave 3: individual oscillation
- *   8  - Wave 4: full ring pulse
- *   9  - Move a dot
- *   10 - Color wipe        (alternates between hue and opposite)
- *   11 - Palette rotate    (gradient spin, speed = direction & rate)
- *   12 - Candle            (speed = flicker rate, fadeout = depth)
- *   13 - Sunrise/sunset    (slow hue build from red to yellow)
- *   14 - Breathing         (whole ring inhales/exhales)
- *   15 - Ocean wave        (rolling brightness wave)
- *   16 - Northern lights   (noise-based hue drift)
- *   17 - TV ambient        (random color section shifts)  ← default
+ *   0  - Move a dot        ← default
+ *   1  - Solid color
+ *   2  - Confetti          (speed = spawn rate, fadeout = fade depth)
+ *   3  - Noise flow        (Perlin noise, fixed hue, fadeout = blob size)
+ *   4  - Noise flow hue    (Perlin noise, drifting hue, fadeout = blob size)
+ *   5  - Half circle       (rotating split, speed = direction & rate, fadeout = blend edge)
+ *   6  - Wave              (sine brightness wave)
+ *   7  - Color wipe        (alternates between hue and opposite, fadeout = blend width)
+ *   8  - Palette rotate    (gradient spin, speed = direction & rate, fadeout = gradient width)
+ *   9  - Candle            (speed = flicker rate, fadeout = flicker depth)
+ *   10 - Breathing         (whole ring inhales/exhales)
+ *   11 - Northern lights   (noise-based hue drift, fadeout = dark patch depth)
  */
+
+// ============================================================
+// DEVICE SELECTION — uncomment ONE:
+// ============================================================
+#define DEVICE_NANOCIRCLE
+// #define DEVICE_CIRCLE
+// #define DEVICE_CIRCLE_180
+// ============================================================
+
+// Uncomment to wipe EEPROM and boot with defaults (re-comment and reflash after!)
+// #define EEPROM_RESET
 
 #include <ESP8266WiFi.h>
 #include <espnow.h>
@@ -36,84 +42,81 @@
 #define EEPROM_ADDR_MAGIC 0
 #define EEPROM_ADDR_DATA  1
 
-#define DEVICE_NAME        "Circle"
-#define MAX_MODE           17
-
-#define NUM_LEDS           300
-#define DATA_PIN           14
-#define CLOCK_PIN          12
+// ---------- DEVICE CONFIG ----------
+#ifdef DEVICE_NANOCIRCLE
+  #define DEVICE_NAME       "NanoCircle"
+  #define NUM_LEDS          60
+#elif defined(DEVICE_CIRCLE)
+  #define DEVICE_NAME       "Circle"
+  #define NUM_LEDS          300
+  #define DATA_PIN          14
+  #define CLOCK_PIN         12
+#elif defined(DEVICE_CIRCLE_180)
+  #define DEVICE_NAME       "Circle 180"
+  #define NUM_LEDS          180
+  #define DATA_PIN          14
+  #define CLOCK_PIN         12
+#else
+  #error "No device selected — uncomment DEVICE_NANOCIRCLE, DEVICE_CIRCLE or DEVICE_CIRCLE_180 above"
+#endif
 
 #define BRIGHTNESS         200
+#define MAX_MODE           15
 #define FRAMES_PER_SECOND  60
 
 CRGB leds[NUM_LEDS];
 
-// Current state (set via ESP-NOW)
+// ---------- CURRENT STATE ----------
 uint8_t hue     = 30;
 uint8_t sat     = 200;
 uint8_t val     = 200;
 bool    power   = true;
-int     mode    = 9;    // Move a Dot is default
+int     mode    = 0;
 uint8_t speed   = 128;
 uint8_t fadeout = 10;
 
-// Noise state
-uint16_t noiseZ     = 0;
-uint16_t noiseScale = 20;
-
-// Hue drift state (mode 3)
-uint8_t       driftHue          = 0;
-unsigned long previousMillisHue = 0;
-
-// Confetti state
+// ---------- ANIMATION STATE ----------
+uint16_t noiseZ              = 0;
+uint16_t noiseScale          = 20;
+uint8_t  driftHue            = 0;
+unsigned long previousMillisHue      = 0;
 unsigned long previousMillisConfetti = 0;
-
-// Half circle rotation state
-float halfCircleOffset = 0.0f;
-
-// Color wipe state
-int   wipePos       = 0;
-bool  wipeReverse   = false;
+float    halfCircleOffset    = 0.0f;
+int      wipePos             = 0;
+bool     wipeReverse         = false;
 unsigned long previousMillisWipe = 0;
+float    paletteOffset       = 0.0f;
+uint16_t candleZ             = 0;
+float    breathPhase         = 0.0f;
+uint16_t northernZ           = 0;
+float    northernHueShift    = 0.0f;
+float    burstPos            = 0.0f;
+uint8_t  sparkleBri[NUM_LEDS];
+#define  NUM_BLOBS 4
+float    blobPos[NUM_BLOBS];
+float    blobSpd[NUM_BLOBS];
+int8_t   blobHueOff[NUM_BLOBS];
+bool     blobsInitialized    = false;
+#define  NUM_CLOUDS 4
+float    cloudPos[NUM_CLOUDS];
+float    cloudSpd[NUM_CLOUDS];
+uint8_t  cloudHue[NUM_CLOUDS];
+bool     cloudsInitialized   = false;
 
-// Palette rotate state
-float paletteOffset = 0.0f;
-
-// Candle state
-uint16_t candleZ = 0;
-
-// Sunrise state
-float sunriseProgress = 0.0f;
-
-// Breathing state
-float breathPhase = 0.0f;
-
-// Ocean wave state
-float wavePhase = 0.0f;
-
-// Northern lights state
-uint16_t northernZ = 0;
-float    northernHueShift = 0.0f;
-
-// TV ambient state
-uint8_t  tvHue[NUM_LEDS];
-uint8_t  tvBri[NUM_LEDS];
-unsigned long previousMillisTv = 0;
-
-// Move a Dot state
+// ---------- MOVE A DOT STATE ----------
 #define NUM_DOTS              5
 #define MAX_DOT_AGE           500
 #define SPEED_DOTS_DIFFERENCE 50
-#define HUE_SPREAD            8    // ±8 from base hue — nearby colours only
-#define SAT_SPREAD            200  // dots can desaturate up to 200 below base (→ white)
-#define VAL_SPREAD            40   // each dot dimmed 0–40 below val (keeps all dots in bright range)
+#define HUE_SPREAD            8
+#define SAT_SPREAD            200
+#define VAL_SPREAD            40
 
 float   pos_dot[NUM_DOTS];
 float   spd_dot[NUM_DOTS];
 int     age_dot[NUM_DOTS];
-int8_t  hue_offset[NUM_DOTS];   // offset from base hue
-uint8_t sat_reduction[NUM_DOTS]; // desaturates toward white (0 = base colour, high = white)
-uint8_t val_reduction[NUM_DOTS]; // subtracted from val (0 = full brightness)
+int8_t  hue_offset[NUM_DOTS];
+uint8_t sat_reduction[NUM_DOTS];
+uint8_t val_reduction[NUM_DOTS];
 bool    dotsInitialized = false;
 
 // ---------- PRESETS ----------
@@ -134,15 +137,56 @@ typedef struct {
   LampPreset slots[MAX_PRESETS];
 } preset_packet;
 
+#ifdef DEVICE_NANOCIRCLE
 static const LampPreset lampPresets[MAX_PRESETS] = {
-  { "Warm",      18, 200, 255, true, 0, 128,  10 },  // Warm amber, solid
-  { "Cool",     155, 130, 230, true, 0, 128,  10 },  // Cool blue-white, solid
-  { "Vivid",      0, 255, 255, true, 0, 128,  10 },  // Saturated red, solid
-  { "Ocean",    135, 255, 200, true, 0, 128,  10 },  // Deep teal, solid
-  { "Confetti",  80, 255, 255, true, 1, 180,  80 },  // Green confetti
-  { "Dots",      30, 200, 220, true, 9, 128,  10 },  // Move a Dot
-  { "Wave",     170, 255, 220, true, 5, 150,  10 },  // Sine wave, blue
-  { "Night",     20, 220,  60, true, 0, 128,  10 },  // Dim warm
+  { "Circle",   30,  200, 220, true,  0, 30,  59 },
+  { "Dimmed",   30,  200,  73, true,  0, 49,   0 },
+  { "Sun",      20,  220, 200, true,  0, 128, 10 },
+  { "Ocean",   165,  255, 177, true,  0, 67,  81 },
+  { "Confetti", 80,  255, 255, true,  2, 180, 80 },
+  { "Warm",     18,  200, 255, true,  1, 128, 10 },
+  { "Wave",     30,  200, 255, true,  6, 42,   0 },
+  { "Glow",     48,  180, 160, true,  3, 42,  10 },
+};
+#elif defined(DEVICE_CIRCLE) || defined(DEVICE_CIRCLE_180)
+static const LampPreset lampPresets[MAX_PRESETS] = {
+  { "Warm",     18,  200, 255, true,  1, 128, 10 },
+  { "Cool",    155,  130, 230, true,  1, 128, 10 },
+  { "Vivid",     0,  255, 255, true,  1, 128, 10 },
+  { "Ocean",   135,  255, 200, true,  1, 128, 10 },
+  { "Confetti", 80,  255, 255, true,  2, 180, 80 },
+  { "Dots",     30,  200, 220, true,  0, 128, 10 },
+  { "Wave",    170,  255, 220, true,  6, 150, 10 },
+  { "Night",    20,  220,  60, true,  1, 128, 10 },
+};
+#endif
+
+// ---------- MODE NAMES PACKET ----------
+#define MAX_MODE_NAME_LEN  14
+#define MAX_MODES_PACKET   16  // Fixed size — must match remote
+typedef struct {
+  bool    isModeNamesPacket;
+  uint8_t count;
+  char    names[MAX_MODES_PACKET][MAX_MODE_NAME_LEN];
+} mode_names_packet;
+
+static const char* modeNames[] = {
+  "Move a Dot",
+  "Solid Color",
+  "Confetti",
+  "Noise Flow",
+  "Noise Hue",
+  "Half Circle",
+  "Wave",
+  "Color Wipe",
+  "Palette",
+  "Candle",
+  "Breathing",
+  "Northern Lights",
+  "Sparkle Burst",
+  "Lava Lamp",
+  "Clouds",
+  "Segments",
 };
 
 // ---------- ESP-NOW MESSAGE STRUCT ----------
@@ -150,24 +194,24 @@ typedef struct struct_message {
   uint8_t h;
   uint8_t s;
   uint8_t v;
-  bool power;
-  int mode;
+  bool    power;
+  int     mode;
   uint8_t speed;
   uint8_t fadeout;
-  bool requestState;   // If true: reply with current state, don't apply changes
-  bool isDiscovery;    // If true: discovery broadcast — reply with device name
-  char deviceName[16]; // Device name sent in discovery reply
-  int  maxMode;        // Max mode index, sent by lamp during discovery
-  bool requestPresets; // If true: reply with preset list
+  bool    requestState;     // If true: reply with current state, don't apply changes
+  bool    isDiscovery;      // If true: discovery broadcast — reply with device name
+  char    deviceName[16];   // Device name sent in discovery reply
+  int     maxMode;          // Max mode index, sent by lamp during discovery
+  bool    requestPresets;   // If true: reply with preset list
+  bool    requestModeNames; // If true: reply with mode names list
 } struct_message;
 
 struct_message incomingData;
 
 // ---------- ESP-NOW CALLBACK ----------
-void onDataRecv(uint8_t * mac, uint8_t *incomingDataBytes, uint8_t len) {
+void onDataRecv(uint8_t *mac, uint8_t *incomingDataBytes, uint8_t len) {
   memcpy(&incomingData, incomingDataBytes, sizeof(incomingData));
 
-  // If the remote is doing a discovery broadcast, reply with our name and return
   if (incomingData.isDiscovery) {
     struct_message response = {};
     response.isDiscovery = true;
@@ -175,13 +219,12 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingDataBytes, uint8_t len) {
     response.maxMode = MAX_MODE;
     esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
     esp_now_send(mac, (uint8_t*)&response, sizeof(response));
-    Serial.println("Discovery request received — sending name back to remote");
+    Serial.println("Discovery — sending name to remote");
     return;
   }
 
-  // If the remote is requesting our state, send it back and return
   if (incomingData.requestState) {
-    struct_message response = {};  // zero-init: ensures isDiscovery=false, deviceName=""
+    struct_message response = {};
     response.h            = hue;
     response.s            = sat;
     response.v            = val;
@@ -192,11 +235,10 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingDataBytes, uint8_t len) {
     response.requestState = false;
     esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
     esp_now_send(mac, (uint8_t*)&response, sizeof(response));
-    Serial.println("State request received — sending state back to remote");
+    Serial.println("State request — sending state to remote");
     return;
   }
 
-  // If the remote is requesting our presets, send them and return
   if (incomingData.requestPresets) {
     preset_packet pp = {};
     pp.isPresetPacket = true;
@@ -204,7 +246,20 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingDataBytes, uint8_t len) {
     for (int i = 0; i < MAX_PRESETS; i++) pp.slots[i] = lampPresets[i];
     esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
     esp_now_send(mac, (uint8_t*)&pp, sizeof(pp));
-    Serial.println("Preset request received — sending presets to remote");
+    Serial.println("Preset request — sending presets to remote");
+    return;
+  }
+
+  if (incomingData.requestModeNames) {
+    mode_names_packet mn = {};
+    mn.isModeNamesPacket = true;
+    mn.count = MAX_MODE + 1;
+    for (int i = 0; i <= MAX_MODE; i++) {
+      strncpy(mn.names[i], modeNames[i], MAX_MODE_NAME_LEN - 1);
+    }
+    esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
+    esp_now_send(mac, (uint8_t*)&mn, sizeof(mn));
+    Serial.println("Mode names request — sending names to remote");
     return;
   }
 
@@ -216,35 +271,26 @@ void onDataRecv(uint8_t * mac, uint8_t *incomingDataBytes, uint8_t len) {
   speed   = incomingData.speed;
   fadeout = incomingData.fadeout;
 
-  // Save settings to EEPROM so they survive a power cycle
   EEPROM.write(EEPROM_ADDR_MAGIC, EEPROM_MAGIC);
   EEPROM.put(EEPROM_ADDR_DATA, incomingData);
   EEPROM.commit();
 
-  Serial.print("ESP-NOW -> H:");
-  Serial.print(hue);
-  Serial.print(" S:");
-  Serial.print(sat);
-  Serial.print(" V:");
-  Serial.print(val);
-  Serial.print(" Power:");
-  Serial.print(power);
-  Serial.print(" Mode:");
-  Serial.print(mode);
-  Serial.print(" Speed:");
-  Serial.print(speed);
-  Serial.print(" Fade:");
-  Serial.println(fadeout);
+  Serial.printf("ESP-NOW -> H:%d S:%d V:%d Power:%d Mode:%d Speed:%d Fade:%d\n",
+                hue, sat, val, power, mode, speed, fadeout);
 }
 
 // ---------- SETUP ----------
 void setup() {
-  delay(2000);
   Serial.begin(115200);
-  Serial.println("circle booting...");
+  Serial.printf("%s booting...\n", DEVICE_NAME);
 
-  // --- EEPROM: load saved settings ---
   EEPROM.begin(1 + sizeof(struct_message));
+
+#ifdef EEPROM_RESET
+  EEPROM.write(EEPROM_ADDR_MAGIC, 0x00);
+  EEPROM.commit();
+  Serial.println("EEPROM reset — using defaults. Re-comment EEPROM_RESET and reflash!");
+#else
   if (EEPROM.read(EEPROM_ADDR_MAGIC) == EEPROM_MAGIC) {
     EEPROM.get(EEPROM_ADDR_DATA, incomingData);
     hue     = incomingData.h;
@@ -256,8 +302,9 @@ void setup() {
     fadeout = incomingData.fadeout;
     Serial.println("Settings restored from EEPROM.");
   } else {
-    Serial.println("No saved settings found, using defaults.");
+    Serial.println("No saved settings — using defaults.");
   }
+#endif
 
   WiFi.mode(WIFI_STA);
   Serial.print("MAC: ");
@@ -269,11 +316,17 @@ void setup() {
   }
   esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
   esp_now_register_recv_cb(onDataRecv);
-  Serial.println("ESP-NOW Ready!");
+  Serial.println("ESP-NOW ready");
 
+#ifdef DEVICE_NANOCIRCLE
+  FastLED.addLeds<WS2812, 12, GRB>(leds, NUM_LEDS).setCorrection(TypicalSMD5050);
+#elif defined(DEVICE_CIRCLE) || defined(DEVICE_CIRCLE_180)
   FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, BGR>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+#endif
+
   FastLED.setBrightness(BRIGHTNESS);
-  FastLED.clear();
+  fill_solid(leds, NUM_LEDS, CHSV(hue, sat, val));
+  FastLED.show();
 
   noiseZ = random16();
 }
@@ -285,23 +338,14 @@ void checkSerial() {
   cmd.trim();
 
   if (cmd == "GET") {
-    Serial.print("STATE:");
-    Serial.print(hue);     Serial.print(",");
-    Serial.print(sat);     Serial.print(",");
-    Serial.print(val);     Serial.print(",");
-    Serial.print(power);   Serial.print(",");
-    Serial.print(mode);    Serial.print(",");
-    Serial.print(speed);   Serial.print(",");
-    Serial.println(fadeout);
+    Serial.printf("STATE:%d,%d,%d,%d,%d,%d,%d\n", hue, sat, val, power, mode, speed, fadeout);
     return;
   }
-
   if (cmd == "NAME") {
     Serial.println("NAME:" DEVICE_NAME);
     return;
   }
 
-  // Parse: h,s,v,power,mode,speed,fadeout
   int vals[7];
   int idx = 0;
   char buf[64];
@@ -332,109 +376,202 @@ void loop() {
   FastLED.delay(1000 / FRAMES_PER_SECOND);
 }
 
+// ============================================================
+// ANIMATIONS
+// ============================================================
+
 // ---------- SOLID COLOR ----------
 void solidColor() {
   fill_solid(leds, NUM_LEDS, CHSV(hue, sat, val));
 }
 
 // ---------- CONFETTI ----------
+// speed = spawn rate | fadeout = fade depth (0 = no fade)
 void confetti() {
   if (fadeout > 0) {
     uint8_t fadeAmount = map(fadeout, 0, 255, 2, 30);
     fadeToBlackBy(leds, NUM_LEDS, fadeAmount);
   }
-
   unsigned long now           = millis();
   unsigned long spawnInterval = map(speed, 0, 255, 600, 16);
-
   if (now - previousMillisConfetti >= spawnInterval) {
     previousMillisConfetti = now;
-    int pos = random16(NUM_LEDS);
-    leds[pos] += CHSV(hue, sat, val);
+    leds[random16(NUM_LEDS)] += CHSV(hue, sat, val);
   }
 }
 
-// ---------- NOISE FLOW (1D) ----------
+// ---------- NOISE FLOW ----------
+// speed = flow speed | fadeout = blob size (low = fine grain, high = wide blobs)
 void noiseFlow() {
-  uint8_t noiseSpeed = map(speed, 0, 255, 1, 8);
+  uint8_t  noiseSpeed    = map(speed, 0, 255, 1, 8);
+  uint16_t dynamicScale  = map(fadeout, 0, 255, 5, 80);
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t n          = inoise8(i * noiseScale, noiseZ);
+    uint8_t n          = inoise8(i * dynamicScale, noiseZ);
     uint8_t brightness = map(n, 0, 255, 0, val);
     leds[i] = CHSV(hue, sat, brightness);
   }
   noiseZ += noiseSpeed;
 }
 
-// ---------- NOISE FLOW HUE DRIFT (1D) ----------
+// ---------- NOISE FLOW HUE ----------
+// speed = flow speed | fadeout = blob size
 void noiseFlowHue() {
-  uint8_t noiseSpeed = map(speed, 0, 255, 1, 8);
-
+  uint8_t  noiseSpeed   = map(speed, 0, 255, 1, 8);
+  uint16_t dynamicScale = map(fadeout, 0, 255, 5, 80);
   unsigned long now = millis();
   if (now - previousMillisHue >= 500) {
     previousMillisHue = now;
     driftHue++;
   }
-
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t n          = inoise8(i * noiseScale, noiseZ);
+    uint8_t n          = inoise8(i * dynamicScale, noiseZ);
     uint8_t brightness = map(n, 0, 255, 0, val);
     leds[i] = CHSV(driftHue, sat, brightness);
   }
   noiseZ += noiseSpeed;
 }
 
-// ---------- WAVE HELPERS ----------
-uint8_t getBpm() {
-  return map(speed, 0, 255, 3, 60);
+// ---------- HALF CIRCLE ----------
+// speed = rotation direction & rate (128 = stopped) | fadeout = blend edge (0 = wide, 255 = hard)
+void halfCircle() {
+  float rotationSpeed = ((speed - 128) / 128.0f) * 0.25f;
+  halfCircleOffset += rotationSpeed;
+  if (halfCircleOffset >= NUM_LEDS) halfCircleOffset -= NUM_LEDS;
+  if (halfCircleOffset < 0)         halfCircleOffset += NUM_LEDS;
+
+  int half = NUM_LEDS / 2;
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    int  pos      = (int)(i + halfCircleOffset + NUM_LEDS) % NUM_LEDS;
+    bool inHalfA  = (pos < half);
+
+    // Distance to nearest boundary, normalised: 0.0 = at boundary, 1.0 = center of half
+    float dist     = inHalfA ? min(pos, half - pos)
+                              : min(pos - half, NUM_LEDS - pos);
+    float normDist = constrain(dist / (half / 2.0f), 0.0f, 1.0f);
+
+    // How much to blend toward the opposite color — capped at 0.5 so halves stay distinct
+    float blendAmt = (1.0f - normDist) * (fadeout / 255.0f) * 0.5f;
+
+    // Interpolate hue in HSV space — no muddy RGB mixing
+    uint8_t blendedHue = inHalfA ? (uint8_t)(hue + blendAmt * 128)
+                                  : (uint8_t)(hue + 128 - blendAmt * 128);
+    leds[i] = CHSV(blendedHue, sat, val);
+  }
 }
 
-// Wave 1: sine brightness wave across the ring
-void wave1() {
-  uint8_t bpm = getBpm();
+// ---------- WAVE ----------
+// speed = BPM | fadeout = wave width (0 = narrow bright peak, 255 = wide nearly full ring)
+void wave() {
+  uint8_t bpm    = map(speed, 0, 255, 3, 20);
+  uint8_t minBri = map(fadeout, 0, 255, 0, val);
   for (int i = 0; i < NUM_LEDS; i++) {
     uint8_t phase      = (uint8_t)map(i, 0, NUM_LEDS - 1, 0, 255);
-    uint8_t brightness = beatsin8(bpm, 0, val, 0, phase);
+    uint8_t brightness = beatsin8(bpm, minBri, val, 0, phase);
     leds[i] = CHSV(hue, sat, brightness);
   }
 }
 
-// Wave 2: sawtooth scanning dot
-void wave2() {
-  fadeToBlackBy(leds, NUM_LEDS, map(fadeout, 0, 255, 2, 50));
-  uint8_t bpm = getBpm();
-  int pos = map8(beat8(bpm), 0, NUM_LEDS - 1);
-  leds[pos] = CHSV(hue, sat, val);
-}
+// ---------- COLOR WIPE ----------
+// speed = wipe speed | fadeout = blend width at the transition front
+void colorWipe() {
+  unsigned long wipeInterval = 1 + (unsigned long)((1.0f - speed / 255.0f) * 80.0f);
+  unsigned long now = millis();
+  if (now - previousMillisWipe >= wipeInterval) {
+    previousMillisWipe = now;
+    wipePos++;
+    if (wipePos >= NUM_LEDS) {
+      wipePos = 0;
+      wipeReverse = !wipeReverse;
+    }
+  }
 
-// Wave 3: each LED oscillates at its own slightly different frequency
-void wave3() {
-  uint8_t bpm = getBpm();
+  uint8_t newHue     = wipeReverse ? (uint8_t)(hue + 128) : hue;
+  uint8_t prevHue    = wipeReverse ? hue : (uint8_t)(hue + 128);
+  int     blendWidth = max(2, (int)map(fadeout, 0, 255, 2, NUM_LEDS / 2));
+
+  // Pre-compute once — avoids expensive HSV→RGB conversion on every LED every frame
+  CRGB colNew  = CHSV(newHue,  sat, val);
+  CRGB colPrev = CHSV(prevHue, sat, val);
+
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t brightness = beatsin8(bpm + i, 0, val);
+    int dist = (wipePos - i + NUM_LEDS) % NUM_LEDS;
+    if (dist < blendWidth) {
+      uint8_t t = map(dist, 0, blendWidth - 1, 255, 0);
+      leds[i] = blend(colNew, colPrev, t);
+    } else {
+      leds[i] = colNew;
+    }
+  }
+}
+
+// ---------- PALETTE ROTATE ----------
+// speed = rotation direction & rate (128 = stopped) | fadeout = gradient spread width
+void paletteRotate() {
+  float rotationSpeed = ((speed - 128) / 128.0f) * 0.4f;
+  paletteOffset += rotationSpeed;
+  if (paletteOffset >= NUM_LEDS) paletteOffset -= NUM_LEDS;
+  if (paletteOffset < 0)         paletteOffset += NUM_LEDS;
+
+  uint8_t spread = map(fadeout, 0, 255, 4, 128);
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    int     pos        = (int)(i + paletteOffset) % NUM_LEDS;
+    uint8_t blendedHue = hue + (uint8_t)((pos / (float)NUM_LEDS) * spread);
+    leds[i] = CHSV(blendedHue, sat, val);
+  }
+}
+
+// ---------- CANDLE ----------
+// speed = flicker rate | fadeout = flicker depth (0 = subtle, 255 = dramatic)
+void candle() {
+  uint8_t noiseSpeed = map(speed, 0, 255, 3, 15);
+  candleZ += noiseSpeed;
+  uint8_t minBri = val - map(fadeout, 0, 255, 0, val);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t n          = inoise8(i * 15, candleZ);
+    uint8_t brightness = map(n, 0, 255, minBri, val);
     leds[i] = CHSV(hue, sat, brightness);
   }
 }
 
-// Wave 4: full ring breathes together
-void wave4() {
-  uint8_t bpm        = getBpm();
-  uint8_t brightness = beatsin8(bpm, 0, val);
+// ---------- BREATHING ----------
+// speed = breath rate
+void breathing() {
+  float breathSpeed = 0.005f + (speed / 255.0f) * 0.03f;
+  breathPhase += breathSpeed;
+  uint8_t brightness = 100 + (uint8_t)((sin(breathPhase) * 0.5f + 0.5f) * (val - 100));
   fill_solid(leds, NUM_LEDS, CHSV(hue, sat, brightness));
 }
 
+// ---------- NORTHERN LIGHTS ----------
+// speed = drift speed | fadeout = dark patch depth (0 = no dip, 255 = full black)
+void northernLights() {
+  uint8_t noiseSpeed = map(speed, 0, 255, 1, 20);
+  northernZ += noiseSpeed;
+  northernHueShift += 0.1f;
+  uint8_t minBri = val - map(fadeout, 0, 255, 0, val);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    uint8_t n = inoise8(i * 8, northernZ);
+    uint8_t h = hue + (uint8_t)(sin(i * 0.15f + northernHueShift) * 20);
+    uint8_t v = map(n, 0, 255, minBri, val);
+    leds[i] = CHSV(h, sat, v);
+  }
+}
+
 // ---------- MOVE A DOT ----------
+// speed = dot speed | fadeout = trail length
 void initDot(int i) {
-  int globalSpeed = map(speed, 0, 255, 1, 60);                          // 1–60 (÷100 → 0.01–0.60 LEDs/frame)
-  int spread      = map(speed, 0, 255, 3, SPEED_DOTS_DIFFERENCE);       // spread also scales with speed
-  int minSpd      = globalSpeed;
+  int globalSpeed = map(speed, 0, 255, 1, 60);
+  int spread      = map(speed, 0, 255, 3, SPEED_DOTS_DIFFERENCE);
   int maxSpd      = constrain(globalSpeed + spread, 0, 100);
-  spd_dot[i]    = (float)map(random(100), 0, 100, minSpd, maxSpd) / 100.0f
-                  * (random(2) * 2 - 1);           // random ± direction
+  spd_dot[i]       = (float)map(random(100), 0, 100, globalSpeed, maxSpd) / 100.0f
+                     * (random(2) * 2 - 1);
   pos_dot[i]       = random(NUM_LEDS);
   age_dot[i]       = random(MAX_DOT_AGE / 10);
-  hue_offset[i]    = (int8_t)(random(HUE_SPREAD * 2 + 1) - HUE_SPREAD);   // ±8 hue
-  sat_reduction[i] = random8(SAT_SPREAD + 1);                              // 0–200 toward white
-  val_reduction[i] = random8(VAL_SPREAD + 1);                              // 0–40 dimmer than val
+  hue_offset[i]    = (int8_t)(random(HUE_SPREAD * 2 + 1) - HUE_SPREAD);
+  sat_reduction[i] = random8(SAT_SPREAD + 1);
+  val_reduction[i] = random8(VAL_SPREAD + 1);
 }
 
 void initAllDots() {
@@ -444,216 +581,198 @@ void initAllDots() {
 
 void moveADot() {
   if (!dotsInitialized) initAllDots();
-
   EVERY_N_MILLISECONDS(50) {
-    if (fadeout > 0) {
-      fadeToBlackBy(leds, NUM_LEDS, map(fadeout, 1, 255, 2, 50));
-    }
+    if (fadeout > 0) fadeToBlackBy(leds, NUM_LEDS, map(fadeout, 1, 255, 2, 50));
   }
-
   for (int i = 0; i < NUM_DOTS; i++) {
-    // Draw dot — all three channels vary slightly around the base values
     uint8_t dotSat = (uint8_t)max(0, (int)sat - (int)sat_reduction[i]);
     uint8_t dotVal = (uint8_t)max(0, (int)val - (int)val_reduction[i]);
     leds[(int)pos_dot[i]] = CHSV((uint8_t)(hue + hue_offset[i]), dotSat, dotVal);
-
-    // Move dot
     pos_dot[i] += spd_dot[i];
-
-    // Age dot and reinitialise when expired
     age_dot[i]++;
     if (age_dot[i] > MAX_DOT_AGE) initDot(i);
-
-    // Wrap around the ring
     if (pos_dot[i] >= NUM_LEDS && spd_dot[i] > 0) pos_dot[i] = 0;
     if (pos_dot[i] < 0         && spd_dot[i] < 0) pos_dot[i] = NUM_LEDS - 1;
   }
 }
 
-// ---------- DISPLAY LEDS ----------
-// ---------- HALF CIRCLE ----------
-void halfCircle() {
-  float rotationSpeed = ((speed - 128) / 128.0f) * 0.25f;
-  halfCircleOffset += rotationSpeed;
-  if (halfCircleOffset >= NUM_LEDS) halfCircleOffset -= NUM_LEDS;
-  if (halfCircleOffset < 0) halfCircleOffset += NUM_LEDS;
-
-  uint8_t oppositeHue = hue + 128;
-  for (int i = 0; i < NUM_LEDS; i++) {
-    int pos = (int)(i + halfCircleOffset) % NUM_LEDS;
-    leds[i] = (pos < NUM_LEDS / 2) ? CHSV(hue, sat, val) : CHSV(oppositeHue, sat, val);
+// ---------- LAVA LAMP ----------
+// speed = blob movement speed | fadeout = blob size
+void lavaLamp() {
+  if (!blobsInitialized) {
+    for (int i = 0; i < NUM_BLOBS; i++) {
+      blobPos[i]    = random(NUM_LEDS);
+      blobSpd[i]    = (random(50) / 100.0f + 0.05f) * (random(2) ? 1 : -1);
+      blobHueOff[i] = (int8_t)(random(40) - 20);
+    }
+    blobsInitialized = true;
   }
-}
 
-// ---------- COLOR WIPE ----------
-void colorWipe() {
-  unsigned long wipeInterval = 1 + (unsigned long)((1.0f - speed / 255.0f) * 80.0f);
-  unsigned long now = millis();
-  if (now - previousMillisWipe >= wipeInterval) {
-    previousMillisWipe = now;
-    uint8_t oppositeHue = hue + 128;
-    leds[wipePos] = wipeReverse ? CHSV(oppositeHue, sat, val) : CHSV(hue, sat, val);
-    wipePos++;
-    if (wipePos >= NUM_LEDS) {
-      wipePos = 0;
-      wipeReverse = !wipeReverse;
+  float moveScale = speed / 255.0f;
+  for (int i = 0; i < NUM_BLOBS; i++) {
+    // Slight random wobble to speed
+    blobSpd[i] += (random(100) / 100.0f - 0.5f) * 0.005f;
+    blobSpd[i]  = constrain(blobSpd[i], -0.4f, 0.4f);
+    blobPos[i] += blobSpd[i] * moveScale;
+    if (blobPos[i] >= NUM_LEDS) blobPos[i] -= NUM_LEDS;
+    if (blobPos[i] < 0)         blobPos[i] += NUM_LEDS;
+  }
+
+  int blobWidth = map(fadeout, 0, 255, 8, NUM_LEDS / 2);
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    float totalWeight = 0;
+    float weightedHue = 0;
+
+    for (int b = 0; b < NUM_BLOBS; b++) {
+      float dist = fabsf(i - blobPos[b]);
+      if (dist > NUM_LEDS / 2) dist = NUM_LEDS - dist;  // ring wrap
+      if (dist < blobWidth) {
+        float t         = 1.0f - (dist / blobWidth);
+        float influence = t * t;
+        totalWeight    += influence;
+        weightedHue    += influence * (hue + blobHueOff[b]);
+      }
+    }
+
+    if (totalWeight > 0) {
+      uint8_t finalHue = (uint8_t)(weightedHue / totalWeight);
+      uint8_t finalVal = (uint8_t)constrain(totalWeight * val, 0, val);
+      leds[i] = CHSV(finalHue, sat, finalVal);
+    } else {
+      leds[i] = CHSV(hue, sat, 0);
     }
   }
 }
 
-// ---------- PALETTE ROTATE ----------
-void paletteRotate() {
-  float rotationSpeed = ((speed - 128) / 128.0f) * 0.4f;
-  paletteOffset += rotationSpeed;
-  if (paletteOffset >= NUM_LEDS) paletteOffset -= NUM_LEDS;
-  if (paletteOffset < 0) paletteOffset += NUM_LEDS;
-
-  for (int i = 0; i < NUM_LEDS; i++) {
-    int pos = (int)(i + paletteOffset) % NUM_LEDS;
-    uint8_t blendedHue = hue + (uint8_t)((pos / (float)NUM_LEDS) * 128);
-    leds[i] = CHSV(blendedHue, sat, val);
+// ---------- CLOUDS ----------
+// speed = movement speed | fadeout = cloud length (short to long, relative to NUM_LEDS)
+void clouds() {
+  if (!cloudsInitialized) {
+    for (int i = 0; i < NUM_CLOUDS; i++) {
+      cloudPos[i] = (float)i * (NUM_LEDS / NUM_CLOUDS);
+      cloudSpd[i] = (random(30) / 100.0f + 0.05f) * (random(2) ? 1 : -1);
+      cloudHue[i] = hue + (i * 64);  // Evenly spaced hues
+    }
+    cloudsInitialized = true;
   }
-}
 
-// ---------- CANDLE FLAME ----------
-void candle() {
-  uint8_t noiseSpeed = map(speed, 0, 255, 3, 15);
-  candleZ += noiseSpeed;
-  uint8_t minBri = val - map(fadeout, 0, 255, 0, val);
-  for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t n = inoise8(i * 15, candleZ);
-    uint8_t brightness = map(n, 0, 255, minBri, val);
-    leds[i] = CHSV(hue, sat, brightness);
-  }
-}
+  float moveScale  = speed / 255.0f;
+  int   cloudLen   = map(fadeout, 0, 255, NUM_LEDS / 8, NUM_LEDS / 2);
+  int   edgeLen    = max(2, cloudLen / 4);  // Soft edge width = quarter of cloud
 
-// ---------- SUNRISE / SUNSET ----------
-void sunrise() {
-  float step = 0.00005f + (speed / 255.0f) * 0.0005f;
-  sunriseProgress += step;
-  if (sunriseProgress > 1.0f) sunriseProgress = 0.0f;
-  uint8_t h = (uint8_t)(sunriseProgress * 30);
-  uint8_t v = (uint8_t)(sunriseProgress * val);
-  fill_solid(leds, NUM_LEDS, CHSV(h, sat, v));
-}
+  // Clear LEDs
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
 
-// ---------- BREATHING ----------
-void breathing() {
-  float breathSpeed = 0.005f + (speed / 255.0f) * 0.03f;
-  breathPhase += breathSpeed;
-  uint8_t brightness = (uint8_t)((sin(breathPhase) * 0.5f + 0.5f) * val);
-  fill_solid(leds, NUM_LEDS, CHSV(hue, sat, brightness));
-}
+  for (int c = 0; c < NUM_CLOUDS; c++) {
+    cloudPos[c] += cloudSpd[c] * moveScale;
+    if (cloudPos[c] >= NUM_LEDS) cloudPos[c] -= NUM_LEDS;
+    if (cloudPos[c] < 0)         cloudPos[c] += NUM_LEDS;
 
-// ---------- OCEAN WAVE ----------
-void oceanWave() {
-  float waveSpeed = 0.01f + (speed / 255.0f) * 0.1f;
-  wavePhase += waveSpeed;
-  for (int i = 0; i < NUM_LEDS; i++) {
-    float angle = (i / (float)NUM_LEDS) * TWO_PI * 2;
-    uint8_t brightness = (uint8_t)((sin(angle + wavePhase) * 0.5f + 0.5f) * val);
-    leds[i] = CHSV(hue, sat, brightness);
-  }
-}
+    int center = (int)cloudPos[c];
 
-// ---------- NORTHERN LIGHTS ----------
-void northernLights() {
-  uint8_t noiseSpeed = map(speed, 0, 255, 1, 4);
-  northernZ += noiseSpeed;
-  northernHueShift += 0.1f;
-  for (int i = 0; i < NUM_LEDS; i++) {
-    uint8_t n = inoise8(i * 20, northernZ);
-    uint8_t h = hue + (uint8_t)(sin(i * 0.3f + northernHueShift) * 20);
-    uint8_t v = map(n, 0, 255, 0, val);
-    leds[i] = CHSV(h, sat, v);
-  }
-}
+    for (int j = -cloudLen / 2; j <= cloudLen / 2; j++) {
+      int idx = (center + j + NUM_LEDS) % NUM_LEDS;
+      int distFromEdge = abs(j);
+      int distToEdge   = cloudLen / 2 - distFromEdge;
 
-// ---------- TV AMBIENT ----------
-void tvAmbient() {
-  unsigned long interval = map(speed, 0, 255, 800, 80);
-  unsigned long now = millis();
-  if (previousMillisTv == 0) {
-    for (int i = 0; i < NUM_LEDS; i++) { tvHue[i] = hue; tvBri[i] = val; }
-  }
-  if (now - previousMillisTv >= interval) {
-    previousMillisTv = now;
-    int start = random8(NUM_LEDS);
-    int len   = random8(4, 12);
-    uint8_t newHue = hue + random8(60) - 30;
-    uint8_t newBri = val - random8(60);
-    for (int i = 0; i < len; i++) {
-      int idx = (start + i) % NUM_LEDS;
-      tvHue[idx] = newHue;
-      tvBri[idx] = newBri;
+      // Soft fade at edges
+      uint8_t brightness;
+      if (distToEdge >= edgeLen) {
+        brightness = val;  // Flat top
+      } else {
+        brightness = map(distToEdge, 0, edgeLen, 0, val);
+      }
+
+      // Add to existing LED (blend overlapping clouds)
+      CRGB existing = leds[idx];
+      CRGB newCol   = CRGB(CHSV(cloudHue[c], sat, brightness));
+      leds[idx] = existing + newCol;
     }
   }
-  for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = CHSV(tvHue[i], sat, tvBri[i]);
+}
+
+// ---------- SEGMENTS ----------
+// speed = movement speed | fadeout = segment length (relative to NUM_LEDS)
+void segments() {
+  if (!cloudsInitialized) {
+    for (int i = 0; i < NUM_CLOUDS; i++) {
+      cloudPos[i] = (float)i * (NUM_LEDS / NUM_CLOUDS);
+      cloudSpd[i] = (random(30) / 100.0f + 0.05f) * (random(2) ? 1 : -1);
+      cloudHue[i] = hue + (i * 64);
+    }
+    cloudsInitialized = true;
+  }
+
+  float moveScale = speed / 255.0f;
+  int   segLen    = map(fadeout, 0, 255, NUM_LEDS / 8, NUM_LEDS / 2);
+
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+
+  for (int c = 0; c < NUM_CLOUDS; c++) {
+    cloudPos[c] += cloudSpd[c] * moveScale;
+    if (cloudPos[c] >= NUM_LEDS) cloudPos[c] -= NUM_LEDS;
+    if (cloudPos[c] < 0)         cloudPos[c] += NUM_LEDS;
+
+    int start = (int)(cloudPos[c] - segLen / 2 + NUM_LEDS) % NUM_LEDS;
+    CRGB col  = CHSV(cloudHue[c], sat, val);
+
+    for (int j = 0; j < segLen; j++) {
+      int idx    = (start + j) % NUM_LEDS;
+      leds[idx] += col;  // Add — overlapping segments blend colors
+    }
   }
 }
 
+// ---------- SPARKLE BURST ----------
+// speed = focal point movement | fadeout = cluster width (tight vs spread)
+void sparkleBurst() {
+  // Move focal point around the ring
+  float moveSpeed = (speed / 255.0f) * 0.5f;
+  burstPos += moveSpeed;
+  if (burstPos >= NUM_LEDS) burstPos -= NUM_LEDS;
+
+  // Fade all sparkles
+  for (int i = 0; i < NUM_LEDS; i++) {
+    if (sparkleBri[i] > 3) sparkleBri[i] -= 3; else sparkleBri[i] = 0;
+  }
+
+  // Cluster width: fadeout=0 → half the ring, fadeout=255 → very tight
+  int clusterWidth = map(fadeout, 0, 255, 4, NUM_LEDS);
+
+  // Spawn a few sparkles near the focal point each frame
+  int spawns = random(1, 4);
+  for (int s = 0; s < spawns; s++) {
+    int offset = random(-clusterWidth / 2, clusterWidth / 2);
+    int idx    = ((int)burstPos + offset + NUM_LEDS) % NUM_LEDS;
+    sparkleBri[idx] = val;
+  }
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = CHSV(hue, sat, sparkleBri[i]);
+  }
+}
+
+// ---------- DISPLAY ----------
 void displayLeds() {
-  if (!power) {
-    FastLED.clear();
-    return;
-  }
-
+  if (!power) { FastLED.clear(); return; }
   switch (mode) {
-    case 0:
-      solidColor();
-      break;
-    case 1:
-      confetti();
-      break;
-    case 2:
-      noiseFlow();
-      break;
-    case 3:
-      noiseFlowHue();
-      break;
-    case 4:
-      halfCircle();
-      break;
-    case 5:
-      wave1();
-      break;
-    case 6:
-      wave2();
-      break;
-    case 7:
-      wave3();
-      break;
-    case 8:
-      wave4();
-      break;
-    case 9:
-      moveADot();
-      break;
-    case 10:
-      colorWipe();
-      break;
-    case 11:
-      paletteRotate();
-      break;
-    case 12:
-      candle();
-      break;
-    case 13:
-      sunrise();
-      break;
-    case 14:
-      breathing();
-      break;
+    case 0:  moveADot();       break;
+    case 1:  solidColor();     break;
+    case 2:  confetti();       break;
+    case 3:  noiseFlow();      break;
+    case 4:  noiseFlowHue();   break;
+    case 5:  halfCircle();     break;
+    case 6:  wave();           break;
+    case 7:  colorWipe();      break;
+    case 8:  paletteRotate();  break;
+    case 9:  candle();         break;
+    case 10: breathing();      break;
+    case 11: northernLights();  break;
+    case 12: sparkleBurst();    break;
+    case 13: lavaLamp();         break;
+    case 14: clouds();           break;
     case 15:
-      oceanWave();
-      break;
-    case 16:
-      northernLights();
-      break;
-    case 17:
-    default:
-      tvAmbient();
-      break;
+    default: segments();         break;
   }
 }
