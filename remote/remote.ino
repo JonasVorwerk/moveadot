@@ -1169,7 +1169,7 @@ void drawModePage() {
   M5.Display.setTextSize(1);
   M5.Display.drawString(upper(modeName), 160, y - 31);
 
-  // Prev button — white square
+  // Prev button
   M5.Display.fillRect(leftX, y, squareSize, squareSize, TFT_WHITE);
   M5.Display.setFont(&UI_FONT);
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
@@ -1177,7 +1177,15 @@ void drawModePage() {
   M5.Display.setTextSize(1);
   M5.Display.drawString("PREV", leftX + squareSize / 2, y + squareSize + 6);
 
-  // Next button — white square
+  // Random button (middle)
+  M5.Display.fillRect(midX, y, squareSize, squareSize, TFT_WHITE);
+  M5.Display.setFont(&UI_FONT);
+  M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
+  M5.Display.setTextDatum(top_center);
+  M5.Display.setTextSize(1);
+  M5.Display.drawString("RANDOM", midX + squareSize / 2, y + squareSize + 6);
+
+  // Next button
   M5.Display.fillRect(rightX, y, squareSize, squareSize, TFT_WHITE);
   M5.Display.setFont(&UI_FONT);
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
@@ -1600,16 +1608,32 @@ void handleTouch() {
 
         if (!wasTouching) {
           int oldMode = currentMode;
+          bool changed = false;
 
           if (touchX >= leftX && touchX <= leftX + squareSize &&
               touchY >= btnY  && touchY <= btnY + squareSize) {
             currentMode = constrain(currentMode - 1, 0, lightMaxMode[currentLight]);
+            changed = (currentMode != oldMode);
           } else if (touchX >= rightX && touchX <= rightX + squareSize &&
                      touchY >= btnY   && touchY <= btnY + squareSize) {
             currentMode = constrain(currentMode + 1, 0, lightMaxMode[currentLight]);
+            changed = (currentMode != oldMode);
+          } else if (touchX >= midX && touchX <= midX + squareSize &&
+                     touchY >= btnY  && touchY <= btnY + squareSize) {
+            currentHue    = random(256);
+            currentSat    = random(100, 256);
+            currentVal    = random(80, 256);
+            currentSpeed  = random(256);
+            currentFadeout = random(256);
+            lightHue[currentLight]    = currentHue;
+            lightSat[currentLight]    = currentSat;
+            lightVal[currentLight]    = currentVal;
+            lightSpeed[currentLight]  = currentSpeed;
+            lightFadeout[currentLight] = currentFadeout;
+            changed = true;
           }
 
-          if (currentMode != oldMode) {
+          if (changed) {
             lightMode[currentLight] = currentMode;
             sendColorData();
             playClick();
