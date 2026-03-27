@@ -75,6 +75,12 @@ int     mode    = 0;
 uint8_t speed   = 128;
 uint8_t fadeout = 10;
 
+// ---------- MODE NAMES SEND STATE ----------
+bool    pendingSendModeNames = false;
+uint8_t pendingModeNamesMac[6];
+int     pendingModeNamesIdx  = 0;
+unsigned long previousMillisModeNames = 0;
+
 // ---------- ANIMATION STATE ----------
 uint16_t noiseZ              = 0;
 uint16_t noiseScale          = 20;
@@ -253,16 +259,9 @@ void onDataRecv(uint8_t *mac, uint8_t *incomingDataBytes, uint8_t len) {
 
   if (incomingData.requestModeNames) {
     esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
-    for (int i = 0; i <= MAX_MODE; i++) {
-      mode_name_packet mn = {};
-      mn.isModeNamePacket = true;
-      mn.modeIndex   = i;
-      mn.totalModes  = MAX_MODE + 1;
-      strncpy(mn.name, modeNames[i], MAX_MODE_NAME_LEN - 1);
-      esp_now_send(mac, (uint8_t*)&mn, sizeof(mn));
-      delay(20);
-    }
-    Serial.printf("Mode names sent (%d modes)\n", MAX_MODE + 1);
+    memcpy(pendingModeNamesMac, mac, 6);
+    pendingModeNamesIdx  = 0;
+    pendingSendModeNames = true;
     return;
   }
 
@@ -373,6 +372,25 @@ void checkSerial() {
 
 // ---------- LOOP ----------
 void loop() {
+  // Send mode names one at a time — non-blocking, 20ms between packets
+  if (pendingSendModeNames) {
+    unsigned long now = millis();
+    if (now - previousMillisModeNames >= 20) {
+      previousMillisModeNames = now;
+      mode_name_packet mn = {};
+      mn.isModeNamePacket = true;
+      mn.modeIndex        = pendingModeNamesIdx;
+      mn.totalModes       = MAX_MODE + 1;
+      strncpy(mn.name, modeNames[pendingModeNamesIdx], MAX_MODE_NAME_LEN - 1);
+      esp_now_send(pendingModeNamesMac, (uint8_t*)&mn, sizeof(mn));
+      pendingModeNamesIdx++;
+      if (pendingModeNamesIdx > MAX_MODE) {
+        pendingSendModeNames = false;
+        Serial.printf("Mode names sent (%d modes)\n", MAX_MODE + 1);
+      }
+    }
+  }
+
   checkSerial();
   displayLeds();
   FastLED.show();

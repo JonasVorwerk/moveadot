@@ -687,8 +687,8 @@ void requestLampModeNames(int idx) {
     return;
   }
 
-  // Wait up to 2s — 15 modes × 20ms = ~300ms + buffer
-  unsigned long deadline = millis() + 2000;
+  // Wait up to 3s — modes × 20ms per packet + loop() frame time buffer
+  unsigned long deadline = millis() + 3000;
   while (millis() < deadline && !lightModeNamesLoaded[idx]) delay(20);
 
   if (lightModeNamesLoaded[idx]) {
