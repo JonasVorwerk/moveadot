@@ -162,13 +162,14 @@ static const LampPreset lampPresets[MAX_PRESETS] = {
 #endif
 
 // ---------- MODE NAMES PACKET ----------
-#define MAX_MODE_NAME_LEN  16
-#define MAX_MODES_PACKET   15  // Fixed size — must match remote (max 250 bytes ESP-NOW)
+// One packet per mode — no size matching needed, remote works with any number of modes
+#define MAX_MODE_NAME_LEN 16
 typedef struct {
-  bool    isModeNamesPacket;
-  uint8_t count;
-  char    names[MAX_MODES_PACKET][MAX_MODE_NAME_LEN];
-} mode_names_packet;
+  bool    isModeNamePacket;  // single name
+  uint8_t modeIndex;
+  uint8_t totalModes;        // total modes the fixture has
+  char    name[MAX_MODE_NAME_LEN];
+} mode_name_packet;          // 19 bytes total
 
 static const char* modeNames[] = {
   "Move a Dot",
@@ -251,15 +252,17 @@ void onDataRecv(uint8_t *mac, uint8_t *incomingDataBytes, uint8_t len) {
   }
 
   if (incomingData.requestModeNames) {
-    mode_names_packet mn = {};
-    mn.isModeNamesPacket = true;
-    mn.count = MAX_MODE + 1;
-    for (int i = 0; i <= MAX_MODE; i++) {
-      strncpy(mn.names[i], modeNames[i], MAX_MODE_NAME_LEN - 1);
-    }
     esp_now_add_peer(mac, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
-    esp_now_send(mac, (uint8_t*)&mn, sizeof(mn));
-    Serial.println("Mode names request — sending names to remote");
+    for (int i = 0; i <= MAX_MODE; i++) {
+      mode_name_packet mn = {};
+      mn.isModeNamePacket = true;
+      mn.modeIndex   = i;
+      mn.totalModes  = MAX_MODE + 1;
+      strncpy(mn.name, modeNames[i], MAX_MODE_NAME_LEN - 1);
+      esp_now_send(mac, (uint8_t*)&mn, sizeof(mn));
+      delay(20);
+    }
+    Serial.printf("Mode names sent (%d modes)\n", MAX_MODE + 1);
     return;
   }
 

@@ -193,17 +193,20 @@ typedef struct struct_message {
 } struct_message;
 
 // ---------- MODE NAMES PACKET ----------
-#define MAX_MODE_NAME_LEN  16
-#define MAX_MODES_PACKET   15  // Fixed packet size — must match fixtures (max 250 bytes ESP-NOW)
+// One packet per mode — fixture can have any number of modes without reflashing remote
+#define MAX_MODE_NAME_LEN 16
+#define MAX_MODES_REMOTE  30   // Max modes any fixture can ever have
 typedef struct {
-  bool    isModeNamesPacket;
-  uint8_t count;
-  char    names[MAX_MODES_PACKET][MAX_MODE_NAME_LEN];
-} mode_names_packet;
+  bool    isModeNamePacket;
+  uint8_t modeIndex;
+  uint8_t totalModes;
+  char    name[MAX_MODE_NAME_LEN];
+} mode_name_packet;
 
 // Per-light mode name storage
-char  lightModeNames[MAX_LIGHTS][MAX_MODES_PACKET][MAX_MODE_NAME_LEN];
-bool  lightModeNamesLoaded[MAX_LIGHTS];
+char    lightModeNames[MAX_LIGHTS][MAX_MODES_REMOTE][MAX_MODE_NAME_LEN];
+uint8_t lightModeNamesReceived[MAX_LIGHTS];
+bool    lightModeNamesLoaded[MAX_LIGHTS];
 
 struct_message outgoingData;
 
@@ -479,19 +482,21 @@ void loop() {
 void OnDataRecvFromLight(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
   const uint8_t *mac = recv_info->src_addr;
 
-  // ── Mode names packet ──────────────────────────────────────────────────
-  if (len == (int)sizeof(mode_names_packet)) {
-    const mode_names_packet *mn = (mode_names_packet*)data;
-    if (mn->isModeNamesPacket) {
+  // ── Single mode name packet ─────────────────────────────────────────────
+  if (len == (int)sizeof(mode_name_packet)) {
+    const mode_name_packet *mn = (mode_name_packet*)data;
+    if (mn->isModeNamePacket) {
       for (int i = 0; i < numLights; i++) {
         if (memcmp(mac, lightMacAddresses[i], 6) == 0) {
-          uint8_t cnt = (mn->count < MAX_MODES_PACKET) ? mn->count : MAX_MODES_PACKET;
-          for (int j = 0; j < cnt; j++) {
-            strncpy(lightModeNames[i][j], mn->names[j], MAX_MODE_NAME_LEN - 1);
-            lightModeNames[i][j][MAX_MODE_NAME_LEN - 1] = '\0';
+          if (mn->modeIndex < MAX_MODES_REMOTE) {
+            strncpy(lightModeNames[i][mn->modeIndex], mn->name, MAX_MODE_NAME_LEN - 1);
+            lightModeNames[i][mn->modeIndex][MAX_MODE_NAME_LEN - 1] = '\0';
+            lightModeNamesReceived[i]++;
+            if (lightModeNamesReceived[i] >= mn->totalModes) {
+              lightModeNamesLoaded[i] = true;
+              Serial.printf("All mode names received from Light %d (%s)\n", i + 1, lightNames[i]);
+            }
           }
-          lightModeNamesLoaded[i] = true;
-          Serial.printf("Mode names received from Light %d (%s)\n", i + 1, lightNames[i]);
           break;
         }
       }
@@ -673,6 +678,9 @@ void requestLampModeNames(int idx) {
   if (idx < 0 || idx >= numLights) return;
   Serial.printf("Requesting mode names from Light %d (%s)...\n", idx + 1, lightNames[idx]);
 
+  lightModeNamesReceived[idx] = 0;
+  lightModeNamesLoaded[idx]   = false;
+
   struct_message req = {};
   req.requestModeNames = true;
   esp_err_t result = esp_now_send(lightMacAddresses[idx], (uint8_t*)&req, sizeof(req));
@@ -681,13 +689,15 @@ void requestLampModeNames(int idx) {
     return;
   }
 
-  unsigned long deadline = millis() + 1000;
+  // Wait up to 2s — 15 modes × 20ms = ~300ms + buffer
+  unsigned long deadline = millis() + 2000;
   while (millis() < deadline && !lightModeNamesLoaded[idx]) delay(20);
 
   if (lightModeNamesLoaded[idx]) {
     Serial.printf("Mode names loaded for Light %d\n", idx + 1);
   } else {
-    Serial.printf("Mode names timeout for Light %d\n", idx + 1);
+    Serial.printf("Mode names timeout for Light %d (%d/%d received)\n",
+                  idx + 1, lightModeNamesReceived[idx], lightMaxMode[idx] + 1);
   }
 }
 
@@ -1149,7 +1159,7 @@ void drawModePage() {
 
   // Mode name centered above the buttons
   char modeName[MAX_MODE_NAME_LEN + 1];
-  if (lightModeNamesLoaded[currentLight] && currentMode < MAX_MODES_PACKET) {
+  if (lightModeNamesLoaded[currentLight] && currentMode < MAX_MODES_REMOTE) {
     strncpy(modeName, lightModeNames[currentLight][currentMode], sizeof(modeName) - 1);
     modeName[sizeof(modeName) - 1] = '\0';
   } else {
