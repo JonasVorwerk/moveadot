@@ -1050,7 +1050,7 @@ void drawLightSelectPage() {
     M5.Display.setTextColor(M5.Display.color565(100, 100, 100), TFT_BLACK);
     M5.Display.setTextDatum(top_center);
     M5.Display.setTextSize(1);
-    M5.Display.drawString(upper(lightNames[i]), x + squareSize / 2, y + squareSize + 10);
+    M5.Display.drawString(upper(lightNames[i]), x + squareSize / 2, y + squareSize + 6);
   }
 }
 
@@ -1112,7 +1112,7 @@ void drawLightMainPage() {
     M5.Display.setTextColor(M5.Display.color565(100, 100, 100));  // Dark grey
     M5.Display.setTextDatum(top_center);
     M5.Display.setTextSize(1);
-    M5.Display.drawString(upper(labels[i]), x + squareSize/2, y + squareSize + 10);
+    M5.Display.drawString(upper(labels[i]), x + squareSize/2, y + squareSize + 6);
   }
 }
 
@@ -1175,7 +1175,7 @@ void drawModePage() {
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
   M5.Display.setTextDatum(top_center);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("PREV", leftX + squareSize / 2, y + squareSize + 10);
+  M5.Display.drawString("PREV", leftX + squareSize / 2, y + squareSize + 6);
 
   // Random button (middle)
   M5.Display.fillRect(midX, y, squareSize, squareSize, TFT_WHITE);
@@ -1183,7 +1183,7 @@ void drawModePage() {
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
   M5.Display.setTextDatum(top_center);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("RANDOM", midX + squareSize / 2, y + squareSize + 10);
+  M5.Display.drawString("RANDOM", midX + squareSize / 2, y + squareSize + 6);
 
   // Next button
   M5.Display.fillRect(rightX, y, squareSize, squareSize, TFT_WHITE);
@@ -1191,7 +1191,7 @@ void drawModePage() {
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
   M5.Display.setTextDatum(top_center);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("NEXT", rightX + squareSize / 2, y + squareSize + 10);
+  M5.Display.drawString("NEXT", rightX + squareSize / 2, y + squareSize + 6);
 }
 
 // ---------- DRAW SETTINGS PAGE ----------
@@ -1238,7 +1238,7 @@ void drawVerticalSlider(int x, int centerY, int width, int height, int value, in
 
 // Helper function to draw label below slider
 void drawSliderLabel(int x, int centerY, int width, int height, const char* label) {
-  int y = centerY + height/2 + 10;  // 10px below slider
+  int y = centerY + height/2 + 6;  // 6px below slider
 
   M5.Display.setFont(&UI_FONT);  // Small sans-serif font
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));  // Dark grey
