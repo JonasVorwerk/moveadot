@@ -774,7 +774,7 @@ void drawPresetsPage() {
     M5.Display.setTextDatum(top_center);
     M5.Display.setTextSize(1);
     const char* label = (i < count) ? lightPresets[currentLight][i].name : "";
-    M5.Display.drawString(upper(label), x + sqW / 2, y + sqW + 10);
+    M5.Display.drawString(upper(label), x + sqW / 2, y + sqW + 6);
   }
 }
 
