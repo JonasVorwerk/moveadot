@@ -1175,7 +1175,7 @@ void drawModePage() {
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
   M5.Display.setTextDatum(top_center);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("PREV", leftX + squareSize / 2, y + squareSize + 6);
+  M5.Display.drawString("PREV", leftX + squareSize / 2, y + squareSize + 10);
 
   // Random button (middle)
   M5.Display.fillRect(midX, y, squareSize, squareSize, TFT_WHITE);
@@ -1183,7 +1183,7 @@ void drawModePage() {
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
   M5.Display.setTextDatum(top_center);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("RANDOM", midX + squareSize / 2, y + squareSize + 6);
+  M5.Display.drawString("RANDOM", midX + squareSize / 2, y + squareSize + 10);
 
   // Next button
   M5.Display.fillRect(rightX, y, squareSize, squareSize, TFT_WHITE);
@@ -1191,7 +1191,7 @@ void drawModePage() {
   M5.Display.setTextColor(M5.Display.color565(100, 100, 100));
   M5.Display.setTextDatum(top_center);
   M5.Display.setTextSize(1);
-  M5.Display.drawString("NEXT", rightX + squareSize / 2, y + squareSize + 6);
+  M5.Display.drawString("NEXT", rightX + squareSize / 2, y + squareSize + 10);
 }
 
 // ---------- DRAW SETTINGS PAGE ----------
